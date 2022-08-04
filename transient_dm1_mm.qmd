@@ -63,101 +63,153 @@ Let's fit a multiplicative power model that includes terms that attempt to
 correct for the violated assumptions of the DM1 model.
 
 - there are > 1 med techs (it's a multi-server queue)
+- there are network effects and the number of rooms will also affect wait time
+via it's impact on med tech utilization (e.g. increased med tech availability
+due to lack of room availability to begin next exam)
 - the service time is not exponential but is approximately hypererlang since
 staff could be doing vitals, post-care or room turnover
 
-
+We will start with fitting models on the entire dataset. Then we will do
+standard train-test split and k-fold cross validation to assess model
+accuracy.
 
 ```{r nls_wait_i}
 init_nls_wait_i <- c(b1=.1, b2=-0.6, b3=2, b4=0.5, b5=2)
 
 nls_wait_i <- nls(mean_wait_i ~ b1 * (num_med_techs ^ b2) * (mean_wait_i_dm1 ^ b3) * (staff_eff_svc_time_cv2 ^ b5) * (num_rooms ^ b4),
-                 data=xy_q_wait_i, start=init_nls_wait_i)
+                 data=xy_q, start=init_nls_wait_i)
 
 summary(nls_wait_i)
 ```
 
+Assess overall fit via an actual vs predicted plot.
+
 ```{r}
-nls_wait_i_fitted <- predict(nls_wait_i, data=xy_q_wait_i)
-nls_wait_i_df <- data.frame(xy_q_wait_i, nls_wait_i_fitted)
+nls_wait_i_fitted <- predict(nls_wait_i, data=xy_q)
+nls_wait_i_df <- data.frame(mean_wait_i=xy_q$mean_wait_i, nls_wait_i_fitted)
 ggplot(nls_wait_i_df) + geom_point(aes(x=mean_wait_i, y=nls_wait_i_fitted)) + geom_abline(intercept=0, slope=1)
 ggsave('./initial_wait_fitted_vs_actual.png')
 ```
 
+Very nice fit and only five parameters. Very likely, polynomial regression
+models or cubic 
 
+## Wait for room
 
-## WAITP
+Our approach is similar to what was done for the initial wait. The details of
+the service time cv2 approximation is different because it's based on the
+time the exam room is in use which includes the wait time for the physician. 
+See Slide 21.
 
-```{r read_rp}
-xy_no_q_wait_r <- read.csv('data/xy_no_q_wait_r.csv')
-xy_q_wait_r <- read.csv('data/xy_q_wait_r.csv')
-
-xy_no_q_wait_p <- read.csv('data/xy_no_q_wait_p.csv')
-xy_q_wait_p <- read.csv('data/xy_q_wait_p.csv')
+```{r read_r_p}
+xy_no_q_wait_r <- read.csv('data/xy_noq_wait_r.csv')
+xy_no_q_wait_p <- read.csv('data/xy_noq_wait_p.csv')
 ```
+
+Again, start with seeing how the raw DM1 approximation looks.
 
 ```{r}
-ggplot(xy_q_wait_r) + geom_point(aes(x=mean_wait_r, y=mean_wait_r_dm1)) + geom_abline(intercept=0, slope=1)
+ggplot(xy_q) + geom_point(aes(x=mean_wait_r, y=mean_wait_r_dm1)) + geom_abline(intercept=0, slope=1)
 ```
+Clearly it captures quite a bit of the mean wait time behavior over the scenarios.
 
 ```{r nls_wait_r}
 init_nls_wait_r <- c(b1=1.0, b2=1.0, b3=.5, b4=-0.5)
 
 nls_wait_r <- nls(mean_wait_r ~ b1 * (mean_wait_r_dm1 ^ b2) * (num_rooms ^ b3) * (exam_eff_svc_time_cv2 ^ b4),
-                 data=xy_q_wait_r, start=init_nls_wait_r)
+                 data=xy_q, start=init_nls_wait_r)
 
 summary(nls_wait_r)
 ```
 ```{r}
 nls_wait_r_fitted <- predict(nls_wait_r, data=xy_q_wait_r)
-nls_wait_r_df <- data.frame(xy_q_wait_r, nls_wait_r_fitted)
+nls_wait_r_df <- data.frame(mean_wait_r=xy_q$mean_wait_r, nls_wait_r_fitted)
 ggplot(nls_wait_r_df) + geom_point(aes(x=mean_wait_r, y=nls_wait_r_fitted)) + geom_abline(intercept=0, slope=1)
 ggsave('./wait_room_fitted_vs_actual.png')
 ```
+Again, nice fit.
 
+## Wait for physician
+
+At this point, the patient is in exam room and is waiting for the physician.
+
+Again, check raw DM1 approximation.
 
 ```{r}
-ggplot(xy_q_wait_p) + geom_point(aes(x=mean_wait_p, y=mean_wait_p_dm1)) + geom_abline(intercept=0, slope=1)
+ggplot(xy_q) + geom_point(aes(x=mean_wait_p, y=mean_wait_p_dm1)) + geom_abline(intercept=0, slope=1)
 ```
+Clearly, DM1 by itself is not capturing the mean wait time behavior. Since 
+we have a network of care stages in which patient needs a room before requesting the physician, it's not unlikely that the number of rooms as well as it's planned utilization might play a role.
+In addition, we need to account for the non-exponential nature of the exam time
+distribution through the cv2 for the exam itself.
 
 ```{r nls_wait_p}
 init_nls_wait_p <- c(b1=1.0, b2=1.0, b3=0.5, b4=2, b5=2, b6=1, b7=1)
 
 nls_wait_p <- nls(mean_wait_p ~ b1 * (mean_wait_p_dm1 ^ b2) * (exam_time_cv2 ^ b3) * (num_rooms ^ b4) * (num_med_techs ^ b5) * (off_util_staff ^ b6) * (off_util_room^b7),
-                 data=xy_q_wait_p, start=init_nls_wait_p)
+                 data=xy_q, start=init_nls_wait_p)
 
 summary(nls_wait_p)
 ```
 
 ```{r}
 nls_wait_p_fitted <- predict(nls_wait_p, data=xy_q_wait_p)
-nls_wait_p_df <- data.frame(xy_q_wait_p, nls_wait_p_fitted)
+nls_wait_p_df <- data.frame(mean_wait_p=xy_q$mean_wait_p, nls_wait_p_fitted)
 ggplot(nls_wait_p_df) + geom_point(aes(x=mean_wait_p, y=nls_wait_p_fitted)) + geom_abline(intercept=0, slope=1)
 ggsave('./wait_physician_fitted_vs_actual.png')
 ```
+Nice fit. Not surprisingly, there's a spike corresponding to small overpredictions
+when the mean wait time was zero (literally no one waited at all for a physician).
 
+
+
+## Mean time in clinic
+
+The total time spent in the clinic is a the summation of time spent in the various
+care and waiting stages. For the total wait from the time after vitals are taken until
+the physician starts the exam is the sum of the two wait times we just modeled - wait
+for a room and then wait for the physician. Are these two wait times correlated? It
+doesn't really look like it from the plot below.
 
 ```{r}
 ggplot(xy_q) + geom_point(aes(x=mean_wait_r, y=mean_wait_p)) + geom_abline(intercept=0, slope=1)
 ```
 
-## ATIC
-
-```{r read_atic}
+```{r compute_atic}
 atic <- nls_wait_i_fitted + xy_q$vitals_time_mean + nls_wait_r_fitted + nls_wait_p_fitted + xy_q$exam_time_mean + xy_q$post_exam_time_mean
 
 ggplot(data.frame(atic, mean_time_in_system=xy_q$mean_time_in_system)) + geom_point(aes(x=mean_time_in_system, y=atic)) + geom_abline(intercept=0, slope=1)
 ```
+Fit looks pretty good. 
+
+## Summary of queueing based model fitting
+
+Overall we have developed parsimonious non-linear models driven by the queueing physics
+of the underlying system. Now, let's try more traditional approaches using polynomial
+regression and cubic splines based on just the base scenario input variables.
+
 ## Poly - wait_i
 
 For poly and spline models need to drop the terms that don't vary in the experimental design - prep, post, tat
 
 ```{r}
-cols_to_drop <- c('num_rooms_per_provider', 'vitals_time_cv2', 'post_exam_time_cv2', 'room_turnover_time_mean', 'room_turnover_time_cv2')
+cols_for_poly_no_util <- c('patients_per_clinic_block', 'num_med_techs', 'num_rooms',
+                   'vitals_time_mean', 'exam_time_mean', 'exam_time_cv2',
+                   )
+
+cols_for_poly_util <- c(cols_for_poly_no_util, c('off_util_staff', 'off_util_room', 'off_util_physician'))
+
+y_cols <- c('post_exam_time_mean', 'mean_wait_i', 'mean_wait_r', 'mean_wait_p',
+                   'mean_time_in_system')
+
+cols_for_poly_no_util <- c(cols_for_poly_no_util, y_cols)
+cols_for_poly_util <- c(cols_for_poly_util, y_cols)
 ```
 
+
+
 ```{r}
-poly_xy_noq_wait_i <- xy_noq_wait_i %>% 
+poly_xy_util <- xy_q %>% 
   select(!all_of(cols_to_drop))
 ```
 
