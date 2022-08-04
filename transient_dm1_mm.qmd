@@ -30,6 +30,7 @@ The `echo: false` option disables the printing of code (only output is displayed
 ```{r libs}
 library(ggplot2)
 library(dplyr)
+library(caret)
 ```
 
 
@@ -188,28 +189,75 @@ Overall we have developed parsimonious non-linear models driven by the queueing 
 of the underlying system. Now, let's try more traditional approaches using polynomial
 regression and cubic splines based on just the base scenario input variables.
 
-## Poly - wait_i
+## Poly modeling data prep
 
 For poly and spline models need to drop the terms that don't vary in the experimental design - prep, post, tat
 
 ```{r}
 cols_for_poly_no_util <- c('patients_per_clinic_block', 'num_med_techs', 'num_rooms',
-                   'vitals_time_mean', 'exam_time_mean', 'exam_time_cv2',
-                   )
+                   'vitals_time_mean', 'exam_time_mean', 'exam_time_cv2', 'post_exam_time_mean')
 
 cols_for_poly_util <- c(cols_for_poly_no_util, c('off_util_staff', 'off_util_room', 'off_util_physician'))
 
-y_cols <- c('post_exam_time_mean', 'mean_wait_i', 'mean_wait_r', 'mean_wait_p',
+y_cols <- c('mean_wait_i', 'mean_wait_r', 'mean_wait_p',
                    'mean_time_in_system')
 
 cols_for_poly_no_util <- c(cols_for_poly_no_util, y_cols)
 cols_for_poly_util <- c(cols_for_poly_util, y_cols)
+
+poly_xy_util_df <- xy_q %>% 
+  select(all_of(cols_for_poly_util))
+
+poly_xy_no_util_df <- xy_q %>% 
+  select(all_of(cols_for_poly_no_util))
 ```
 
 
+## Poly models for initial wait
+
+```{r poly_noutil_wait_i}
+
+
+poly_noutil_wait_i <- lm(mean_wait_i ~ patients_per_clinic_block + I(patients_per_clinic_block^2) +
+                         num_med_techs + I(num_med_techs^2) +
+                         num_rooms + I(num_rooms^2) +
+                         vitals_time_mean + I(vitals_time_mean^2) +
+                         exam_time_mean + I(exam_time_mean^2) +
+                         exam_time_cv2 + I(exam_time_cv2^2) +
+                         post_exam_time_mean + I(post_exam_time_mean^2),
+                 data=poly_xy_no_util_df)
+
+summary(poly_noutil_wait_i)
+```
 
 ```{r}
-poly_xy_util <- xy_q %>% 
-  select(!all_of(cols_to_drop))
+poly_noutil_wait_i_fitted <- predict(poly_noutil_wait_i, data=poly_xy_no_util_df)
+poly_noutil_wait_i_plot_df <- data.frame(mean_wait_i=poly_xy_no_util_df$mean_wait_i, poly_noutil_wait_i_fitted)
+ggplot(poly_noutil_wait_i_plot_df) + geom_point(aes(x=mean_wait_i, y=poly_noutil_wait_i_fitted)) + geom_abline(intercept=0, slope=1)
+ggsave('./poly_wait_initial_fitted_vs_actual.png')
 ```
 
+```{r poly_util_wait_i}
+
+
+poly_util_wait_i <- lm(mean_wait_i ~ patients_per_clinic_block + I(patients_per_clinic_block^2) +
+                         num_med_techs + I(num_med_techs^2) +
+                         num_rooms + I(num_rooms^2) +
+                         vitals_time_mean + I(vitals_time_mean^2) +
+                         exam_time_mean + I(exam_time_mean^2) +
+                         exam_time_cv2 + I(exam_time_cv2^2) +
+                         post_exam_time_mean + I(post_exam_time_mean^2) +
+                         off_util_staff + I(off_util_staff^2) +
+                         off_util_room + I(off_util_room^2) +
+                         off_util_physician + I(off_util_physician^2),
+                 data=poly_xy_util_df)
+
+summary(poly_util_wait_i)
+```
+
+```{r}
+poly_util_wait_i_fitted <- predict(poly_util_wait_i, data=poly_xy_util_df)
+poly_util_wait_i_plot_df <- data.frame(mean_wait_i=poly_xy_util_df$mean_wait_i, poly_util_wait_i_fitted)
+ggplot(poly_util_wait_i_plot_df) + geom_point(aes(x=mean_wait_i, y=poly_util_wait_i_fitted)) + geom_abline(intercept=0, slope=1)
+ggsave('./poly_util_wait_initial_fitted_vs_actual.png')
+```
