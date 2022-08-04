@@ -215,6 +215,8 @@ poly_xy_no_util_df <- xy_q %>%
 
 ## Poly models for initial wait
 
+For the first model, only the base inputs were used in a poly-2 model.
+
 ```{r poly_noutil_wait_i}
 
 
@@ -236,6 +238,10 @@ poly_noutil_wait_i_plot_df <- data.frame(mean_wait_i=poly_xy_no_util_df$mean_wai
 ggplot(poly_noutil_wait_i_plot_df) + geom_point(aes(x=mean_wait_i, y=poly_noutil_wait_i_fitted)) + geom_abline(intercept=0, slope=1)
 ggsave('./poly_wait_initial_fitted_vs_actual.png')
 ```
+
+Clearly, the model does not fit very well.
+
+Now let's add the three utilization related terms into the poly-2 model.
 
 ```{r poly_util_wait_i}
 
@@ -260,4 +266,93 @@ poly_util_wait_i_fitted <- predict(poly_util_wait_i, data=poly_xy_util_df)
 poly_util_wait_i_plot_df <- data.frame(mean_wait_i=poly_xy_util_df$mean_wait_i, poly_util_wait_i_fitted)
 ggplot(poly_util_wait_i_plot_df) + geom_point(aes(x=mean_wait_i, y=poly_util_wait_i_fitted)) + geom_abline(intercept=0, slope=1)
 ggsave('./poly_util_wait_initial_fitted_vs_actual.png')
+```
+
+The utilization terms certainly help. Of course we have a model with 20 terms 
+that are difficult to interpret.
+
+## Poly model for wait for room
+
+We'll just consider the model with the utilization terms.
+
+```{r poly_util_wait_r}
+
+
+poly_util_wait_r <- lm(mean_wait_r ~ patients_per_clinic_block + I(patients_per_clinic_block^2) +
+                         num_med_techs + I(num_med_techs^2) +
+                         num_rooms + I(num_rooms^2) +
+                         vitals_time_mean + I(vitals_time_mean^2) +
+                         exam_time_mean + I(exam_time_mean^2) +
+                         exam_time_cv2 + I(exam_time_cv2^2) +
+                         post_exam_time_mean + I(post_exam_time_mean^2) +
+                         off_util_staff + I(off_util_staff^2) +
+                         off_util_room + I(off_util_room^2) +
+                         off_util_physician + I(off_util_physician^2),
+                 data=poly_xy_util_df)
+
+summary(poly_util_wait_r)
+```
+
+
+```{r}
+poly_util_wait_r_fitted <- predict(poly_util_wait_r, data=poly_xy_util_df)
+poly_util_wait_r_plot_df <- data.frame(mean_wait_r=poly_xy_util_df$mean_wait_r, poly_util_wait_r_fitted)
+ggplot(poly_util_wait_r_plot_df) + geom_point(aes(x=mean_wait_r, y=poly_util_wait_r_fitted)) + geom_abline(intercept=0, slope=1)
+ggsave('./poly_util_room_initial_fitted_vs_actual.png')
+```
+
+## Poly model for mean time in clinic
+
+```{r poly_util_time_in_system}
+
+
+poly_util_time_in_system <- lm(mean_time_in_system ~ patients_per_clinic_block + I(patients_per_clinic_block^2) +
+                         num_med_techs + I(num_med_techs^2) +
+                         num_rooms + I(num_rooms^2) +
+                         vitals_time_mean + I(vitals_time_mean^2) +
+                         exam_time_mean + I(exam_time_mean^2) +
+                         exam_time_cv2 + I(exam_time_cv2^2) +
+                         post_exam_time_mean + I(post_exam_time_mean^2) +
+                         off_util_staff + I(off_util_staff^2) +
+                         off_util_room + I(off_util_room^2) +
+                         off_util_physician + I(off_util_physician^2),
+                 data=poly_xy_util_df)
+
+summary(poly_util_time_in_system)
+```
+
+```{r}
+poly_util_atic_fitted <- predict(poly_util_time_in_system, data=poly_xy_util_df)
+poly_util_atic_plot_df <- data.frame(mean_time_in_system=poly_xy_util_df$mean_time_in_system, poly_util_atic_fitted)
+ggplot(poly_util_atic_plot_df) + geom_point(aes(x=mean_time_in_system, y=poly_util_atic_fitted)) + geom_abline(intercept=0, slope=1)
+ggsave('./poly_util_atic_initial_fitted_vs_actual.png')
+```
+
+## Revisit using orthogonal polynomials
+
+https://stats.stackexchange.com/questions/253123/what-are-multivariate-orthogonal-polynomials-as-computed-in-r
+
+```{r orthopoly_util_wait_i}
+
+
+orthopoly_util_wait_i <- lm(mean_wait_i ~ poly(patients_per_clinic_block, 2) +
+                         poly(num_med_techs, 2) +
+                         poly(num_rooms, 2) +
+                         poly(vitals_time_mean, 2) +
+                         poly(exam_time_mean, 2) +
+                         poly(exam_time_cv2, 2) +
+                         poly(post_exam_time_mean, 2) +
+                         poly(off_util_staff, 2) +
+                         poly(off_util_room, 2) +
+                         poly(off_util_physician, 2),
+                 data=poly_xy_util_df)
+
+summary(orthopoly_util_wait_i)
+```
+
+```{r}
+orthopoly_util_wait_i_fitted <- predict(orthopoly_util_wait_i, data=poly_xy_util_df)
+orthopoly_util_wait_i_plot_df <- data.frame(mean_wait_i=poly_xy_util_df$mean_wait_i, orthopoly_util_wait_i_fitted)
+ggplot(orthopoly_util_wait_i_plot_df) + geom_point(aes(x=mean_wait_i, y=orthopoly_util_wait_i_fitted)) + geom_abline(intercept=0, slope=1)
+ggsave('./orthopoly_util_wait_initial_fitted_vs_actual.png')
 ```
