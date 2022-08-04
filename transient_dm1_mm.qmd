@@ -83,6 +83,24 @@ nls_wait_i <- nls(mean_wait_i ~ b1 * (num_med_techs ^ b2) * (mean_wait_i_dm1 ^ b
 summary(nls_wait_i)
 ```
 
+The fitted model is 
+
+$$
+W_I = 0.0163 \frac{W_{D}^{1.615}R^{0.515}C^{0.3710}}{S^{0.3501}}
+$$
+
+where
+
+- $W_{D}$ is the mean wait in the approximating $D/M/1$ queue
+- $R$ is the number of exam rooms
+- $C$ is the coefficient of variation squared of an approximate effective service time distribution for staff (hyper-erlang)
+- $S$ is the number medical technician staff
+
+One can view the $R$, $C$, and $S$ terms as adjustments to the $D/M/1$ based approximation that account for the assumptions of that queueing system that we have violated
+
+- that it's a standalone queue (not part of a network),
+- that the service time is exponential 
+- that there is a single server.
 Assess overall fit via an actual vs predicted plot.
 
 ```{r}
@@ -92,8 +110,8 @@ ggplot(nls_wait_i_df) + geom_point(aes(x=mean_wait_i, y=nls_wait_i_fitted)) + ge
 ggsave('./initial_wait_fitted_vs_actual.png')
 ```
 
-Very nice fit and only five parameters. Very likely, polynomial regression
-models or cubic 
+Very nice fit and only five parameters that have physical underpinnings that make sense
+in the context of queueing models.
 
 ## Wait for room
 
