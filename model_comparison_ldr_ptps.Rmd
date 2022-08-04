@@ -1,0 +1,578 @@
+---
+title: "Model Comparison - Postpartum"
+author: "isken"
+date: "June 9, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(ggplot2)
+library(stringr)
+library(dplyr)
+#library(Metrics)
+library(caret)
+library(MASS)
+```
+
+```{r}
+source("lib/caret_ptps.r")
+```
+
+
+## Introduction
+
+In this second set of comparisons, let's focus on LDR occupancy in terms of output variables. This 
+should be more difficult than postpartum predictions since occupancy of LDR is impacted by time queueing in obs as well as time blocked in LDR.
+
+
+The output variables to predict will be mean occupancy, 75th and 95th percentiles of occupancy. 
+
+## Experimental design
+
+All 150 simulated scenarios will be used. 
+
+The models to be compared are:
+
+- load and square root based simple queueing approximation based linear models
+- multiple linear regression
+- k-nearest neighbor
+- regression trees
+- cubic splines
+- neural networks
+
+Comparisons will be made using 5-crossfold validation with RMSE as the error metric. In addition, we'll create a holdout test set of 1/6 (25 scenarios) in which a final RMSE comparison will be done.
+
+## Read input/output data
+
+```{r}
+obnetwork_df <- read.csv("mmdata/obnetwork_approx_vs_sim.csv")
+
+```
+Load the simulation inputs and results
+
+```{r}
+load("mmdata/train_exp9_tandem05_nodischadj.RData")
+```
+
+Merge the inputs and results
+
+```{r}
+simresults_obnetwork <- merge(results_df, obnetwork_df, by="scenario")
+```
+
+
+Select relevant columns. For postpartum comparisons, prior knowledge suggests that only the postpartum related input variables be used. We will assume for now that enough "process physics" knowledge is present that the analyst would create the engineered features `load_ldr` <- lam_ldr * alos_ldr` and `rho_ldr <- load_ldr/cap_ldr`. It would be interesting to also run a set of experiments in which we relax this assumption (a naive analyst scenario).
+
+```{r}
+modeling_cols <- c('lam_obs', 'alos_obs', 'cap_obs', 'load_obs', 'rho_obs',
+                   'lam_ldr', 'alos_ldr', 'cap_ldr', 'load_ldr', 'rho_ldr',
+                   'lam_pp', 'alos_pp', 'cap_pp', 'load_pp', 'rho_pp',
+                   'cv2_obs', 'cv2_ldr', 'cv2_ldr', 'tot_c_rate',
+                   'prob_blockedby_pp_approx',
+                   'occ_mean_mean_ldr', 'occ_mean_p75_ldr', 'occ_mean_p95_ldr',
+                   'mean_pct_blocked_by_pp', 'mean_blocked_by_pp_mean', 
+                   'mean_blocked_by_pp_p95')
+
+modeling_df <- simresults_obnetwork[,modeling_cols]
+```
+
+## Input args
+
+Build up the formula argument.
+
+```{r}
+model_formula_lhs <- 'occ_mean_mean_ldr'
+model_formula_rhs_ldr <- 'cap_ldr + load_ldr + rho_ldr'
+model_formula_rhs_ldr2 <- 'I(cap_ldr^2) + I(load_ldr^2) + I(rho_ldr^2)'
+model_formula_rhs_pp <- 'alos_pp + cap_pp + load_pp + rho_pp'
+model_formula_rhs_pp2 <- 'I(alos_pp^2) + I(cap_pp^2) + I(load_pp^2) + I(rho_pp^2)'
+
+model_formula_rhs <- str_c(model_formula_rhs_ldr, 
+                           model_formula_rhs_ldr2, 
+                           model_formula_rhs_pp,
+                           model_formula_rhs_pp2,
+                           sep = " + ")
+
+model_formula <- as.formula(str_c(model_formula_lhs, model_formula_rhs, sep = " ~ "))
+```
+
+Rest of input args for caret_ptps
+
+```{r}
+pm_unit_model_id <- 'occmean_ldr_poly1'
+
+method <- 'lm'
+perf_measure <- 'occmean'
+unit <- 'ldr'
+model <- 'lmpoly1'
+pct_train_val <- 0.7
+seed.partition <- 37
+```
+
+```{r}
+test_lm1 <- lm(model_formula, data = modeling_df)
+summary(test_lm1)
+```
+
+```{r}
+summary(modeling_df$load_ldr)
+```
+
+
+```{r}
+ptps.model_results <- caret_ptps(pm_unit_model_id = pm_unit_model_id, 
+                                 model_formula = model_formula, 
+                                 data = modeling_df, 
+                                 method = method,
+                                 perf_measure = perf_measure,
+                                 unit = unit, 
+                                 model = model,
+                                 pct_train_val = pct_train_val,
+                                 seed.partition = 37,
+                                 seed.resample = 0)
+```
+
+
+```{r}
+set.seed(train_test_seed)
+trainrecs_caret <- createDataPartition(simresults_obnetwork$occ_mean_mean_ldr, 
+                                       p = train_proportion, 
+                                       list = FALSE, times = 1)
+
+modeling_test_caret_df <- modeling_df[-trainrecs_caret, ]
+modeling_train_caret_df <- modeling_df[trainrecs_caret, ]
+```
+
+## Control training process
+
+Specify how the model validation will work.
+
+```{r}
+fitControl <- trainControl(## 5-fold CV
+                           method = "repeatedcv",
+                           number = 5,
+                           ## repeated ten times
+                           repeats = 10)
+```
+
+Now we can use the `caret_tps()` function we wrote to quickly evaluate a bunch of models for several
+response variables.
+
+```{r}
+resample_seed <- 67
+```
+
+
+```{r meanmodels1}
+formula_occmean_ldr_load1 <- occ_mean_mean_ldr ~ 
+                                  rho_ldr * load_ldr + 
+                                  rho_ldr * I(load_ldr ^ 0.5) + 
+                                  rho_pp * load_pp + rho_pp * I(load_pp ^ 0.5) 
+
+set.seed(resample_seed)
+results_occmean_ldr_load1 <- caret_tps(formula_occmean_ldr_load1, modeling_train_caret_df, 
+                                       modeling_test_caret_df,
+                                      method="lm", control=fitControl,
+                                      scenario="occmean_ldr_load1")
+
+formula_occmean_ldr_load2 <- occ_mean_mean_ldr ~ 
+                                  rho_ldr * load_ldr + 
+                                  rho_ldr * I(load_ldr ^ 0.5) + 
+                                  rho_pp * load_pp + rho_pp * I(load_pp ^ 0.5) + tot_c_rate
+
+set.seed(resample_seed)
+results_occmean_ldr_load2 <- caret_tps(formula_occmean_ldr_load2, modeling_train_caret_df, 
+                                       modeling_test_caret_df,
+                                      method="lm", control=fitControl,
+                                      scenario="occmean_ldr_load2")
+```
+
+We can use the following base formula for several different techniques.
+
+
+```{r baseformula}
+formula_occmean_ldr_base <- occ_mean_mean_ldr ~ 
+                               lam_ldr + alos_ldr + cap_ldr + load_ldr + rho_ldr + 
+                               lam_pp + alos_pp + cap_pp + load_pp + rho_pp +
+                               tot_c_rate
+```
+
+Linear stepwise, cubic splines and a random forest can all use the same basic setup. The only change
+is the `method` parameter passed to `caret_tps`. For a basic neural network we have to add the
+the `linout=TRUE` parameter so that regression output is given instead of classification output. For
+kNN, we have to add a preprocessing parameter to center and scale the inputs. Both of these things
+are easy to do since `caret_tps()` can take additional parameters via `...`.
+
+```{r meanmodels2}
+set.seed(resample_seed)
+results_occmean_ldr_lmstep1 <- caret_tps(formula_occmean_ldr_base, modeling_train_caret_df, 
+                                         modeling_test_caret_df,
+                                         method="lmStepAIC", control=fitControl,
+                                         scenario="occmean_ldr_lmstep1")
+
+set.seed(resample_seed)
+results_occmean_ldr_nnet1 <- caret_tps(formula_occmean_ldr_base, modeling_train_caret_df, 
+                                       modeling_test_caret_df,
+                                       method="nnet", control=fitControl,
+                                       scenario="occmean_ldr_nnet1", linout=TRUE)
+
+set.seed(resample_seed)
+results_occmean_ldr_rf1 <- caret_tps(formula_occmean_ldr_base, modeling_train_caret_df, 
+                                     modeling_test_caret_df,
+                                     method="rf", control=fitControl,
+                                     scenario="occmean_ldr_rf1")
+
+set.seed(resample_seed)
+results_occmean_ldr_knn1 <- caret_tps(formula_occmean_ldr_base, modeling_train_caret_df, 
+                                      modeling_test_caret_df,
+                                      method="knn", control=fitControl,
+                                      scenario="occmean_ldr_knn1", 
+                                      preProcess=c("center", "scale"))
+
+set.seed(resample_seed)
+results_occmean_ldr_spline1 <- caret_tps(formula_occmean_ldr_base, modeling_train_caret_df, 
+                                    modeling_test_caret_df,
+                                    method="gamSpline", control=fitControl, 
+                                    scenario="occmean_ldr_spline1")
+```
+
+```{r rmse_occmean}
+cat(sprintf("%s:\t rmse_train = %0.5f rmse_test = %0.5f \n", results_occmean_ldr_load1$scenario, results_occmean_ldr_load1$rmse_train, results_occmean_ldr_load1$rmse_test))
+
+cat(sprintf("%s:\t rmse_train = %0.5f rmse_test = %0.5f \n", results_occmean_ldr_load2$scenario, results_occmean_ldr_load2$rmse_train, results_occmean_ldr_load2$rmse_test))
+
+cat(sprintf("%s:\t rmse_train = %0.5f rmse_test = %0.5f \n", results_occmean_ldr_lmstep1$scenario, results_occmean_ldr_lmstep1$rmse_train, results_occmean_ldr_lmstep1$rmse_test))
+
+cat(sprintf("%s:\t rmse_train = %0.5f rmse_test = %0.5f \n", results_occmean_ldr_nnet1$scenario, results_occmean_ldr_nnet1$rmse_train, results_occmean_ldr_nnet1$rmse_test))
+
+cat(sprintf("%s:\t rmse_train = %0.5f rmse_test = %0.5f \n", results_occmean_ldr_rf1$scenario, results_occmean_ldr_rf1$rmse_train, results_occmean_ldr_rf1$rmse_test))
+
+cat(sprintf("%s:\t rmse_train = %0.5f rmse_test = %0.5f \n", results_occmean_ldr_knn1$scenario, results_occmean_ldr_knn1$rmse_train, results_occmean_ldr_knn1$rmse_test))
+
+cat(sprintf("%s:\t rmse_train = %0.5f rmse_test = %0.5f \n", results_occmean_ldr_spline1$scenario, results_occmean_ldr_spline1$rmse_train, results_occmean_ldr_spline1$rmse_test))
+```
+
+```{r resamp_mean}
+resamps_occmean <- resamples(list(load1 = results_occmean_ldr_load1$caretFit,
+                                  load2 = results_occmean_ldr_load2$caretFit,
+                          lmstep1 = results_occmean_ldr_lmstep1$caretFit,
+                          knn1 = results_occmean_ldr_knn1$caretFit,
+                          nnet1 = results_occmean_ldr_nnet1$caretFit,
+                          rf1 = results_occmean_ldr_rf1$caretFit,
+                          spline1 = results_occmean_ldr_spline1$caretFit))
+
+resamps_occmean
+summary(resamps_occmean)
+bwplot(resamps_occmean, scales = list(relation = "free"))
+dotplot(resamps_occmean, scales = list(relation = "free"))
+```
+
+
+## 95th percentile
+
+```{r}
+set.seed(train_test_seed)
+trainrecs_caret <- createDataPartition(simresults_obnetwork$occ_mean_p95_ldr, p = train_proportion, 
+                                  list = FALSE, times = 1)
+
+modeling_test_caret_df <- simresults_obnetwork[-trainrecs_caret, ]
+modeling_train_caret_df <- simresults_obnetwork[trainrecs_caret, ]
+```
+
+
+
+```{r occ95models1}
+formula_occp95_ldr_load1 <- occ_mean_p95_ldr ~ 
+                               rho_ldr * load_ldr + rho_ldr * I(load_ldr ^ 0.5) + 
+                               rho_pp * load_pp + rho_pp * I(load_pp ^ 0.5) 
+
+set.seed(resample_seed)
+results_occp95_ldr_load1 <- caret_tps(formula_occp95_ldr_load1, modeling_train_caret_df, 
+                                      modeling_test_caret_df,
+                                      method="lm", control=fitControl,
+                                      scenario="occp95_ldr_load1")
+
+formula_occp95_ldr_load2 <- occ_mean_p95_ldr ~ 
+                               rho_ldr * load_ldr + rho_ldr * I(load_ldr ^ 0.5) + 
+                               rho_pp * load_pp + rho_pp * I(load_pp ^ 0.5) + tot_c_rate
+
+set.seed(resample_seed)
+results_occp95_ldr_load2 <- caret_tps(formula_occp95_ldr_load2, modeling_train_caret_df, 
+                                      modeling_test_caret_df,
+                                      method="lm", control=fitControl,
+                                      scenario="occp95_ldr_load2")
+```
+
+```{r occ95formulabase}
+formula_occp95_ldr_base <- occ_mean_p95_ldr ~ 
+                              lam_ldr + alos_ldr + cap_ldr + load_ldr + rho_ldr + 
+                              lam_pp + alos_pp + cap_pp + load_pp + rho_pp + tot_c_rate
+```
+
+```{r occ95models2}
+set.seed(resample_seed)
+results_occp95_ldr_lmstep1 <- caret_tps(formula_occp95_ldr_base, modeling_train_caret_df, 
+                                        modeling_test_caret_df,
+                                        method="lmStepAIC", control=fitControl, 
+                                        scenario="occp95_ldr_lmstep1")
+
+set.seed(resample_seed)
+results_occp95_ldr_nnet1 <- caret_tps(formula_occp95_ldr_base, modeling_train_caret_df, 
+                                      modeling_test_caret_df,
+                                      method="nnet", control=fitControl, 
+                                      scenario="occp95_ldr_nnet1", linout=TRUE)
+
+set.seed(resample_seed)
+results_occp95_ldr_rf1 <- caret_tps(formula_occp95_ldr_base, modeling_train_caret_df, 
+                                    modeling_test_caret_df,
+                                    method="rf", control=fitControl, scenario="occp95_ldr_rf1")
+
+set.seed(resample_seed)
+results_occp95_ldr_knn1 <- caret_tps(formula_occp95_ldr_base, modeling_train_caret_df, 
+                                     modeling_test_caret_df,
+                                     method="knn", control=fitControl,
+                                     scenario="occp95_ldr_knn1", 
+                                     preProcess=c("center", "scale"))
+
+set.seed(resample_seed)
+results_occp95_ldr_spline1 <- caret_tps(formula_occp95_ldr_base, modeling_train_caret_df, 
+                                    modeling_test_caret_df,
+                                    method="gamSpline", control=fitControl, 
+                                    scenario="occp95_ldr_spline1")
+
+```
+
+```{r rmse_occp95}
+cat(sprintf("%s:\t rmse_train = %0.5f rmse_test = %0.5f \n", results_occp95_ldr_load1$scenario, results_occp95_ldr_load1$rmse_train, results_occp95_ldr_load1$rmse_test))
+
+cat(sprintf("%s:\t rmse_train = %0.5f rmse_test = %0.5f \n", results_occp95_ldr_load2$scenario, results_occp95_ldr_load2$rmse_train, results_occp95_ldr_load2$rmse_test))
+
+cat(sprintf("%s:\t rmse_train = %0.5f rmse_test = %0.5f \n", results_occp95_ldr_lmstep1$scenario, results_occp95_ldr_lmstep1$rmse_train, results_occp95_ldr_lmstep1$rmse_test))
+
+cat(sprintf("%s:\t rmse_train = %0.5f rmse_test = %0.5f \n", results_occp95_ldr_nnet1$scenario, results_occp95_ldr_nnet1$rmse_train, results_occp95_ldr_nnet1$rmse_test))
+
+cat(sprintf("%s:\t\t rmse_train = %0.5f rmse_test = %0.5f \n", results_occp95_ldr_rf1$scenario, results_occp95_ldr_rf1$rmse_train, results_occp95_ldr_rf1$rmse_test))
+
+cat(sprintf("%s:\t rmse_train = %0.5f rmse_test = %0.5f \n", results_occp95_ldr_knn1$scenario, results_occp95_ldr_knn1$rmse_train, results_occp95_ldr_knn1$rmse_test))
+
+cat(sprintf("%s:\t rmse_train = %0.5f rmse_test = %0.5f \n", results_occp95_ldr_spline1$scenario, results_occp95_ldr_spline1$rmse_train, results_occp95_ldr_spline1$rmse_test))
+```
+
+```{r}
+summary(results_occp95_ldr_spline1$caretFit$finalModel)
+```
+
+```{r}
+results_occp95_ldr_load1$g_act_vs_pred
+results_occp95_ldr_nnet1$g_act_vs_pred
+results_occp95_ldr_spline1$g_act_vs_pred
+```
+
+```{r resamp_occp95}
+resamps_occp95 <- resamples(list(load1 = results_occp95_ldr_load1$caretFit,
+                                 load2 = results_occp95_ldr_load2$caretFit,
+                          lmstep1 = results_occp95_ldr_lmstep1$caretFit,
+                          knn1 = results_occp95_ldr_knn1$caretFit,
+                          nnet1 = results_occp95_ldr_nnet1$caretFit,
+                          rf1 = results_occp95_ldr_rf1$caretFit,
+                          spline1 = results_occp95_ldr_spline1$caretFit))
+
+resamps_occp95
+summary(resamps_occp95)
+bwplot(resamps_occp95, scales = list(relation = "free"))
+dotplot(resamps_occp95, scales = list(relation = "free"))
+```
+
+## Repeat above for prob of being blocked by PP
+
+```{r}
+set.seed(train_test_seed)
+trainrecs_caret <- createDataPartition(simresults_obnetwork$mean_pct_blocked_by_pp, p = train_proportion, 
+                                  list = FALSE, times = 1)
+
+modeling_test_caret_df <- simresults_obnetwork[-trainrecs_caret, ]
+modeling_train_caret_df <- simresults_obnetwork[trainrecs_caret, ]
+```
+
+```{r}
+formula_pctblkpp_ldr_mgc1 <- mean_pct_blocked_by_pp ~ prob_blockedby_pp_approx
+
+set.seed(resample_seed)
+results_pctblkpp_ldr_mgc1 <- caret_tps(formula_pctblkpp_ldr_mgc1, 
+                                       modeling_train_caret_df, modeling_test_caret_df,
+                                       method="lm", control=fitControl, 
+                                       scenario="pctblkpp_ldr_load1")
+```
+
+```{r}
+formula_pctblkpp_ldr_base <- mean_pct_blocked_by_pp ~ lam_ldr + alos_ldr + cap_ldr + 
+                                           load_ldr + rho_ldr + 
+                                           lam_pp + alos_pp + cap_pp + load_pp + rho_pp + tot_c_rate
+```
+
+```{r}
+set.seed(resample_seed)
+results_pctblkpp_ldr_lmstep1 <- caret_tps(formula_pctblkpp_ldr_base, modeling_train_caret_df, 
+                                          modeling_test_caret_df,
+                                          method="lmStepAIC", control=fitControl,
+                                          scenario="pctblkpp_ldr_lmstep1")
+
+set.seed(resample_seed)
+results_pctblkpp_ldr_nnet1 <- caret_tps(formula_pctblkpp_ldr_base, modeling_train_caret_df,
+                                        modeling_test_caret_df,
+                                        method="nnet", control=fitControl,
+                                        scenario="pctblkpp_ldr_nnet1", linout=TRUE)
+
+set.seed(resample_seed)
+results_pctblkpp_ldr_rf1 <- caret_tps(formula_pctblkpp_ldr_base, modeling_train_caret_df,
+                                      modeling_test_caret_df,
+                                      method="rf", control=fitControl,
+                                      scenario="pctblkpp_ldr_rf1")
+
+set.seed(resample_seed)
+results_pctblkpp_ldr_knn1 <- caret_tps(formula_pctblkpp_ldr_base, modeling_train_caret_df,
+                                       modeling_test_caret_df,
+                                       method="knn", control=fitControl,
+                                       scenario="pctblkpp_ldr_knn1", 
+                                       preProcess=c("center", "scale"))
+
+set.seed(resample_seed)
+results_pctblkpp_ldr_spline1 <- caret_tps(formula_pctblkpp_ldr_base, modeling_train_caret_df, 
+                                    modeling_test_caret_df,
+                                    method="gamSpline", control=fitControl, 
+                                    scenario="pctblkpp_ldr_spline1")
+```
+
+```{r rmse_pctblkpp_ldr}
+cat(sprintf("%s:\t rmse_train = %0.5f rmse_test = %0.5f \n", results_pctblkpp_ldr_mgc1$scenario, results_pctblkpp_ldr_mgc1$rmse_train, results_pctblkpp_ldr_mgc1$rmse_test))
+
+cat(sprintf("%s:\t rmse_train = %0.5f rmse_test = %0.5f \n", results_pctblkpp_ldr_lmstep1$scenario, results_pctblkpp_ldr_lmstep1$rmse_train, results_pctblkpp_ldr_lmstep1$rmse_test))
+
+cat(sprintf("%s:\t rmse_train = %0.5f rmse_test = %0.5f \n", results_pctblkpp_ldr_nnet1$scenario, results_pctblkpp_ldr_nnet1$rmse_train, results_pctblkpp_ldr_nnet1$rmse_test))
+
+cat(sprintf("%s:\t rmse_train = %0.5f rmse_test = %0.5f \n", results_pctblkpp_ldr_rf1$scenario, results_pctblkpp_ldr_rf1$rmse_train, results_pctblkpp_ldr_rf1$rmse_test))
+
+cat(sprintf("%s:\t rmse_train = %0.5f rmse_test = %0.5f \n", results_pctblkpp_ldr_knn1$scenario, results_pctblkpp_ldr_knn1$rmse_train, results_pctblkpp_ldr_knn1$rmse_test))
+
+cat(sprintf("%s:\t rmse_train = %0.5f rmse_test = %0.5f \n", results_pctblkpp_ldr_spline1$scenario, results_pctblkpp_ldr_spline1$rmse_train, results_pctblkpp_ldr_spline1$rmse_test))
+```
+
+```{r resamp_pctblkpp}
+resamps_pctblkpp <- resamples(list(mgc1 = results_pctblkpp_ldr_mgc1$caretFit,
+                          lmstep1 = results_pctblkpp_ldr_lmstep1$caretFit,
+                          knn1 = results_pctblkpp_ldr_knn1$caretFit,
+                          nnet1 = results_pctblkpp_ldr_nnet1$caretFit,
+                          rf1 = results_pctblkpp_ldr_rf1$caretFit,
+                          spline1 = results_pctblkpp_ldr_spline1$caretFit))
+
+resamps_pctblkpp
+summary(resamps_pctblkpp)
+bwplot(resamps_pctblkpp, scales = list(relation = "free"))
+dotplot(resamps_pctblkpp, scales = list(relation = "free"))
+```
+
+Note how well mgc does across samples. Expected since it takes physics into account.
+
+## Repeat above for cond mean time blocked by pp
+
+```{r}
+set.seed(train_test_seed)
+trainrecs_caret <- createDataPartition(simresults_obnetwork$mean_blocked_by_pp_mean, p = train_proportion, 
+                                  list = FALSE, times = 1)
+
+modeling_test_caret_df <- simresults_obnetwork[-trainrecs_caret, ]
+modeling_train_caret_df <- simresults_obnetwork[trainrecs_caret, ]
+```
+
+```{r}
+formula_meanblkpp_ldr_mgc2 <- mean_blocked_by_pp_mean ~ condmeantime_blockedbypp_approx
+
+set.seed(resample_seed)
+results_meanblkpp_ldr_mgc2 <- caret_tps(formula_meanblkpp_ldr_mgc2, 
+                                       modeling_train_caret_df, modeling_test_caret_df,
+                                       method="lm", control=fitControl, 
+                                       scenario="meanblkpp_ldr_load1")
+```
+
+```{r}
+formula_meanblkpp_ldr_base <- mean_blocked_by_pp_mean ~ lam_ldr + alos_ldr + cap_ldr + 
+                                           load_ldr + rho_ldr + 
+                                           lam_pp + alos_pp + cap_pp + load_pp + rho_pp + tot_c_rate
+```
+
+```{r}
+set.seed(resample_seed)
+results_meanblkpp_ldr_lmstep1 <- caret_tps(formula_meanblkpp_ldr_base, modeling_train_caret_df, 
+                                           modeling_test_caret_df,
+                                           method="lmStepAIC", control=fitControl, 
+                                           scenario="meanblkpp_ldr_lmstep1")
+
+set.seed(resample_seed)
+results_meanblkpp_ldr_nnet1 <- caret_tps(formula_meanblkpp_ldr_base, modeling_train_caret_df, 
+                                         modeling_test_caret_df,
+                                         method="nnet", control=fitControl, 
+                                         scenario="meanblkpp_ldr_nnet1", linout=TRUE)
+
+set.seed(resample_seed)
+results_meanblkpp_ldr_rf1 <- caret_tps(formula_meanblkpp_ldr_base, modeling_train_caret_df, 
+                                       modeling_test_caret_df,
+                                       method="rf", control=fitControl, 
+                                       scenario="meanblkpp_ldr_rf1")
+
+set.seed(resample_seed)
+results_meanblkpp_ldr_knn1 <- caret_tps(formula_meanblkpp_ldr_base, modeling_train_caret_df, 
+                                        modeling_test_caret_df,
+                                        method="knn", control=fitControl, 
+                                        scenario="meanblkpp_ldr_knn1", 
+                                        preProcess=c("center", "scale"))
+
+set.seed(resample_seed)
+results_meanblkpp_ldr_spline1 <- caret_tps(formula_meanblkpp_ldr_base, modeling_train_caret_df, 
+                                    modeling_test_caret_df,
+                                    method="gamSpline", control=fitControl, 
+                                    scenario="meanblkpp_ldr_spline1")
+```
+
+```{r rmse_meanblkpp_ldr}
+cat(sprintf("%s:\t rmse_train = %0.5f rmse_test = %0.5f \n", results_meanblkpp_ldr_mgc2$scenario, results_meanblkpp_ldr_mgc2$rmse_train, results_meanblkpp_ldr_mgc2$rmse_test))
+
+cat(sprintf("%s:\t rmse_train = %0.5f rmse_test = %0.5f \n", results_meanblkpp_ldr_lmstep1$scenario, results_meanblkpp_ldr_lmstep1$rmse_train, results_meanblkpp_ldr_lmstep1$rmse_test))
+
+cat(sprintf("%s:\t rmse_train = %0.5f rmse_test = %0.5f \n", results_meanblkpp_ldr_nnet1$scenario, results_meanblkpp_ldr_nnet1$rmse_train, results_meanblkpp_ldr_nnet1$rmse_test))
+
+cat(sprintf("%s:\t rmse_train = %0.5f rmse_test = %0.5f \n", results_meanblkpp_ldr_rf1$scenario, results_meanblkpp_ldr_rf1$rmse_train, results_meanblkpp_ldr_rf1$rmse_test))
+
+cat(sprintf("%s:\t rmse_train = %0.5f rmse_test = %0.5f \n", results_meanblkpp_ldr_knn1$scenario, results_meanblkpp_ldr_knn1$rmse_train, results_meanblkpp_ldr_knn1$rmse_test))
+
+cat(sprintf("%s:\t rmse_train = %0.5f rmse_test = %0.5f \n", results_meanblkpp_ldr_spline1$scenario, results_meanblkpp_ldr_spline1$rmse_train, results_meanblkpp_ldr_spline1$rmse_test))
+```
+
+```{r}
+resamps_meanblkpp <- resamples(list(mgc2 = results_meanblkpp_ldr_mgc2$caretFit,
+                          lmstep1 = results_meanblkpp_ldr_lmstep1$caretFit,
+                          knn1 = results_meanblkpp_ldr_knn1$caretFit,
+                          nnet1 = results_meanblkpp_ldr_nnet1$caretFit,
+                          rf1 = results_meanblkpp_ldr_rf1$caretFit,
+                          spline1 = results_meanblkpp_ldr_spline1$caretFit))
+
+resamps_meanblkpp
+summary(resamps_meanblkpp)
+bwplot(resamps_meanblkpp, scales = list(relation = "free"))
+dotplot(resamps_meanblkpp, scales = list(relation = "free"))
+```
+So, ML workhorses like neural nets, splines and random forests are tough to beat without good domain specific approximations. A few things to explore:
+
+* what if load and rho not included for the naive ML case?
+* how are the results above impacted by validation set size and by number of validation sets for which the whole process is repeated? How much variation in estimated test error?
+* how do the techniques compare when extrapolating beyond (or within but not on) data used to build the models?
+How stable are the models? How does one measure stability for things like random forests or neural nets?
+* is RMSE the "right" error metric to be using?
+* does the number of folds in our k-cross matter?
+* how amenable are the various techniques to embedding in capacity planning models?
+* are results of standard capacity planning techniques impacted by which of the above models is used?
+* what about logistic form for prob of block?
+* why knn weird training in PP? Does it have something to do with the centering and scaling done during preprocessing?

@@ -1,0 +1,163 @@
+---
+title: "Transient DM1 metamodels"
+format: html
+editor: visual
+---
+
+## Quarto
+
+Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+
+## Running Code
+
+When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
+
+```{r}
+1 + 1
+```
+
+You can add options to executable code like this
+
+```{r}
+#| echo: false
+2 * 2
+```
+
+The `echo: false` option disables the printing of code (only output is displayed).
+
+## Libraries
+
+```{r libs}
+library(ggplot2)
+library(dplyr)
+```
+
+
+## Util vs no-util exploration
+
+Let's build a few models to get back up to speed with building these in R.
+
+### Initial wait
+
+```{r read_waiti}
+xy_noq_wait_i <- read.csv('data/xy_noq_wait_i.csv')
+xy_noq_wait_r <- read.csv('data/xy_noq_wait_r.csv')
+xy_noq_atic <- read.csv('data/xy_noq_atic.csv')
+
+xy_q <- read.csv('data/xy_q.csv')
+```
+
+How does the raw DM1 approximation do?
+
+- moves in the right general direction
+- clearly a non-linear relationship
+- banding
+
+None of this is surprising since the clinic is **not** a DM1 queue.
+
+```{r}
+ggplot(xy_q) + geom_point(aes(x=mean_wait_i, y=mean_wait_i_dm1))
+```
+
+Let's fit a multiplicative power model that includes terms that attempt to
+correct for the violated assumptions of the DM1 model.
+
+- there are > 1 med techs (it's a multi-server queue)
+- the service time is not exponential but is approximately hypererlang since
+staff could be doing vitals, post-care or room turnover
+
+
+
+```{r nls_wait_i}
+init_nls_wait_i <- c(b1=.1, b2=-0.6, b3=2, b4=0.5, b5=2)
+
+nls_wait_i <- nls(mean_wait_i ~ b1 * (num_med_techs ^ b2) * (mean_wait_i_dm1 ^ b3) * (staff_eff_svc_time_cv2 ^ b5) * (num_rooms ^ b4),
+                 data=xy_q_wait_i, start=init_nls_wait_i)
+
+summary(nls_wait_i)
+```
+
+```{r}
+nls_wait_i_fitted <- predict(nls_wait_i, data=xy_q_wait_i)
+nls_wait_i_df <- data.frame(xy_q_wait_i, nls_wait_i_fitted)
+ggplot(nls_wait_i_df) + geom_point(aes(x=mean_wait_i, y=nls_wait_i_fitted)) + geom_abline(intercept=0, slope=1)
+ggsave('./initial_wait_fitted_vs_actual.png')
+```
+
+
+
+## WAITP
+
+```{r read_rp}
+xy_no_q_wait_r <- read.csv('data/xy_no_q_wait_r.csv')
+xy_q_wait_r <- read.csv('data/xy_q_wait_r.csv')
+
+xy_no_q_wait_p <- read.csv('data/xy_no_q_wait_p.csv')
+xy_q_wait_p <- read.csv('data/xy_q_wait_p.csv')
+```
+
+```{r}
+ggplot(xy_q_wait_r) + geom_point(aes(x=mean_wait_r, y=mean_wait_r_dm1)) + geom_abline(intercept=0, slope=1)
+```
+
+```{r nls_wait_r}
+init_nls_wait_r <- c(b1=1.0, b2=1.0, b3=.5, b4=-0.5)
+
+nls_wait_r <- nls(mean_wait_r ~ b1 * (mean_wait_r_dm1 ^ b2) * (num_rooms ^ b3) * (exam_eff_svc_time_cv2 ^ b4),
+                 data=xy_q_wait_r, start=init_nls_wait_r)
+
+summary(nls_wait_r)
+```
+```{r}
+nls_wait_r_fitted <- predict(nls_wait_r, data=xy_q_wait_r)
+nls_wait_r_df <- data.frame(xy_q_wait_r, nls_wait_r_fitted)
+ggplot(nls_wait_r_df) + geom_point(aes(x=mean_wait_r, y=nls_wait_r_fitted)) + geom_abline(intercept=0, slope=1)
+ggsave('./wait_room_fitted_vs_actual.png')
+```
+
+
+```{r}
+ggplot(xy_q_wait_p) + geom_point(aes(x=mean_wait_p, y=mean_wait_p_dm1)) + geom_abline(intercept=0, slope=1)
+```
+
+```{r nls_wait_p}
+init_nls_wait_p <- c(b1=1.0, b2=1.0, b3=0.5, b4=2, b5=2, b6=1, b7=1)
+
+nls_wait_p <- nls(mean_wait_p ~ b1 * (mean_wait_p_dm1 ^ b2) * (exam_time_cv2 ^ b3) * (num_rooms ^ b4) * (num_med_techs ^ b5) * (off_util_staff ^ b6) * (off_util_room^b7),
+                 data=xy_q_wait_p, start=init_nls_wait_p)
+
+summary(nls_wait_p)
+```
+
+```{r}
+nls_wait_p_fitted <- predict(nls_wait_p, data=xy_q_wait_p)
+nls_wait_p_df <- data.frame(xy_q_wait_p, nls_wait_p_fitted)
+ggplot(nls_wait_p_df) + geom_point(aes(x=mean_wait_p, y=nls_wait_p_fitted)) + geom_abline(intercept=0, slope=1)
+ggsave('./wait_physician_fitted_vs_actual.png')
+```
+
+
+```{r}
+ggplot(xy_q) + geom_point(aes(x=mean_wait_r, y=mean_wait_p)) + geom_abline(intercept=0, slope=1)
+```
+
+## ATIC
+
+```{r read_atic}
+atic <- nls_wait_i_fitted + xy_q$vitals_time_mean + nls_wait_r_fitted + nls_wait_p_fitted + xy_q$exam_time_mean + xy_q$post_exam_time_mean
+
+ggplot(data.frame(atic, mean_time_in_system=xy_q$mean_time_in_system)) + geom_point(aes(x=mean_time_in_system, y=atic)) + geom_abline(intercept=0, slope=1)
+```
+## Poly - wait_i
+
+For poly and spline models need to drop the terms that don't vary in the experimental design - prep, post, tat
+
+```{r}
+cols_to_drop <- c('num_rooms_per_provider', 'vitals_time_cv2', 'post_exam_time_cv2', 'room_turnover_time_mean', 'room_turnover_time_cv2')
+```
+
+```{r}
+poly_xy_noq_wait_i <- xy_noq_wait_i %>% 
+  select(!all_of(cols_to_drop))
+```
+
