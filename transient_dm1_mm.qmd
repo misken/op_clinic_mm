@@ -4,49 +4,130 @@ format: html
 editor: visual
 ---
 
-## Quarto
 
-Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
-
-## Running Code
-
-When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
-
-```{r}
-1 + 1
-```
-
-You can add options to executable code like this
-
-```{r}
-#| echo: false
-2 * 2
-```
-
-The `echo: false` option disables the printing of code (only output is displayed).
-
-## Libraries
 
 ```{r libs}
 library(ggplot2)
 library(dplyr)
-library(caret)
+library(rsample)
+#library(caret)
 ```
 
+## Background on the simulation study
 
-## Util vs no-util exploration
+Long ago I was involved in a project in which we were building decision
+support tools for clinic management. Our goal was to have a relatively simple,
+spreadsheet based tool, that could be used to assess the performance implications
+of various combinations of key clinic demand and resource related variables. For,
+example, we wanted to be able to see how increasing the number of patients
+scheduled in a four hour clinic block or the number of exam rooms per physician
+would impact things like patient wait times,
+resource utilization,
+and the length of time needed to care for all of the patients (since running
+the clinic past the scheduled closing time resulted in undesirable staffing
+related consequences and costs).
+
+We developed a discrete event simulation model and ran a series
+of experiments in which we systematically varied key inputs and tracked
+key performance measures. See my **updated_clinic_flow.pptx** document for
+a flow chart of the simulation model as well as details on the experimental 
+design.
+
+Input variables:
+
+- number of medical technicians (2, 3, 4, 5)
+- number of exam rooms per physician (1, 2, 3)
+- mean number of minutes to complete the vital signs portion of the exam by the support staff (6, 9, 12 minutes)
+- mean number of minutes to complete the exam by the physician (10, 15, 20 mins)
+- the coefficient of variation squared of the exam time (1.0, 0.5, 0.2)
+- mean number of minutes to complete post-exam portion of the visit by the support staff (2, 5, 8 minutes)
+- number of patients in the 4 hour clinic session - patients arrive in groups of two at fixed intervals based on number of total patients. The levels depend on the exam time mean:
+    * 10 min: 32, 36, 40, 44, 48 patients
+    * 15 min: 24, 28, 32, 36, 40 patients
+    * 20 min: 16, 20, 24, 28, 32 patients
+    
+The key performance measures (output variables) were:
+
+- initial wait time for patient to see med tech for vital signs
+- mean time until patient saw physician to start exam
+- mean total time in clinic for the patient
+- end of the clinic day time
+
+We then developed an Excel based tool that simply did "table lookups" to
+create plots that showed how the performance measures varies across
+the levels of the input variables. See Slide 6 in my INFORMS - 2006 presentation.
+
+That original study was then followed by a research project into simulation
+metamodels for this same clinic experiment. That led to the INFORMS - 2006 presentation.
+
+Now I am revisiting this same scenario again for our current paper. As I outlined
+in my email:
+
+After looking more closely at the OP clinic example, there were a few things I didn't like in terms of using it directly in the paper.
+
+1) Most importantly, since the simulation model was written so long ago and in MedModel, I had no access to the details of the simulation logic anymore.
+
+2) Also, while the exam time was modeled with an erlang distribution that allowed me to create realistic right skewed distributions and to easily have a few different experiment levels for the coefficient of variation squared (CV2( of the exam time distribution, the distributions used for the other stages of care (vital signs, post exam care, and room turnover) were all exponential distributions. The exponential distributions are pretty unrealistic. Ideally these would also be erlang distributions so that I could adjust their CV2 values to make them more realistic.
+
+3) In the experimental design, there were five levels for the number of patients in each 4 hour clinic block. It looks like I had used levels 1, 3 and 5 as my training scenarios, and levels 2 and 4 for the test data. It would have been better if I had done a standard random train-test split with 80% of the scenarios in train and the other 20% in split (there are 4860 scenarios in total). I've attached a csv file that contains the experimental design - it's one row per scenario.
+
+So...., I rewrote the outpatient clinic simulation model in Python (uses the SimPy library). The logic is the same as the original model but incorporates the changes above and automates a bunch of simulation output analysis to create metamodeling input data sets (similar to what I did for the obflow case study in the paper). Each of the 4860 scenarios was simulated with 50 independent replications which then formed the basis for computing the scenario specific summary stats that get used as metamodeling inputs. It takes a few hours to make all the simulation runs.
+
+Below is the narrative and code for the revisited analysis. We need to pick and
+choose what goes into the paper. I'm hoping you guys can handle translating the
+stuff below into the actual paper section. If you have R related questions on
+things like reformating the plots, just let me know. All plots are
+done with ggplot2.
+
+**NOTE** I'm not advocating that all the stuff below goes into the paper. This
+stuff is my actual raw analysis of the simulation experiment and metamodeling results.
+It needs your editing to turn into paper language.
+
+## About the queueing inspired terms
+
+In the OB patient flow metamodels, the queueing inspired terms were things
+related to steady state analysis of the tandem queueing system and relied
+on things like overall resource load and utilization and steady state
+queueing results for M/G/s queueing systems. In contrast, this outpatient
+modeling problem involves transient analysis (a 4hr clinic block) of a system in which a finite
+number of scheduled patients arrive for care. Thus, steady state results are
+**not** relevant and we can actually overload the system since there are a
+finite number of patients. Obviously, the more you overload the system, the
+longer the patient wait times and the longer the system has to operate
+beyond the 4 hour planned end of the day.
+
+So, the queuing inspired features for this problem uses known results for
+transient analysis of D/M/1 queues (see Slide 13 of the INFORMS presentation).
+In addition, staff, room and physician offered utilization terms were also
+included. Unlike in the steady state based scenario of the OB patient flow
+model, these terms could be > 1 (again, an overloaded system). I rewrote the
+R code that I had originally wrote that had the D/M/1 functions and moved
+it into Python. So, all of the feature engineering was done as part of the
+Python simulation output analysis. The result is a csv file, `xy_q.csv` that
+contains all of the base inputs, queueing related features, and output measures.
+Then in R, I simply read it into a dataframe and then the model formulas just
+used the necessary columns depending on the model.
+
+
+## Nonlinear queueing inspired models
 
 Let's build a few models to get back up to speed with building these in R.
 
-### Initial wait
+First read in the matrix that contains all possible predictors as well as
+all possible target variables. Note that some of the predictors are the
+queueing inspired terms and others are the base inputs used in the simulation
+experimental design.
 
-```{r read_waiti}
-xy_noq_wait_i <- read.csv('data/xy_noq_wait_i.csv')
-xy_noq_wait_r <- read.csv('data/xy_noq_wait_r.csv')
-xy_noq_atic <- read.csv('data/xy_noq_atic.csv')
-
+```{r read_xy_q}
 xy_q <- read.csv('data/xy_q.csv')
 ```
+
+```{r}
+str(xy_q)
+```
+
+
+### Initial wait
 
 How does the raw DM1 approximation do?
 
@@ -56,7 +137,7 @@ How does the raw DM1 approximation do?
 
 None of this is surprising since the clinic is **not** a DM1 queue.
 
-```{r}
+```{r wait_i_dm1}
 ggplot(xy_q) + geom_point(aes(x=mean_wait_i, y=mean_wait_i_dm1))
 ```
 
@@ -101,9 +182,13 @@ One can view the $R$, $C$, and $S$ terms as adjustments to the $D/M/1$ based app
 - that it's a standalone queue (not part of a network),
 - that the service time is exponential 
 - that there is a single server.
+
+See Slide 27 in the 2006 INFORMS presentation.
+
+
 Assess overall fit via an actual vs predicted plot.
 
-```{r}
+```{r nls_wait_i_plot}
 nls_wait_i_fitted <- predict(nls_wait_i, data=xy_q)
 nls_wait_i_df <- data.frame(mean_wait_i=xy_q$mean_wait_i, nls_wait_i_fitted)
 ggplot(nls_wait_i_df) + geom_point(aes(x=mean_wait_i, y=nls_wait_i_fitted)) + geom_abline(intercept=0, slope=1)
@@ -113,21 +198,16 @@ ggsave('./initial_wait_fitted_vs_actual.png')
 Very nice fit and only five parameters that have physical underpinnings that make sense
 in the context of queueing models.
 
-## Wait for room
+### Wait for room
 
 Our approach is similar to what was done for the initial wait. The details of
 the service time cv2 approximation is different because it's based on the
 time the exam room is in use which includes the wait time for the physician. 
 See Slide 21.
 
-```{r read_r_p}
-xy_no_q_wait_r <- read.csv('data/xy_noq_wait_r.csv')
-xy_no_q_wait_p <- read.csv('data/xy_noq_wait_p.csv')
-```
-
 Again, start with seeing how the raw DM1 approximation looks.
 
-```{r}
+```{r wait_r_dm1}
 ggplot(xy_q) + geom_point(aes(x=mean_wait_r, y=mean_wait_r_dm1)) + geom_abline(intercept=0, slope=1)
 ```
 Clearly it captures quite a bit of the mean wait time behavior over the scenarios.
@@ -140,7 +220,7 @@ nls_wait_r <- nls(mean_wait_r ~ b1 * (mean_wait_r_dm1 ^ b2) * (num_rooms ^ b3) *
 
 summary(nls_wait_r)
 ```
-```{r}
+```{r nls_wait_i_plot}
 nls_wait_r_fitted <- predict(nls_wait_r, data=xy_q_wait_r)
 nls_wait_r_df <- data.frame(mean_wait_r=xy_q$mean_wait_r, nls_wait_r_fitted)
 ggplot(nls_wait_r_df) + geom_point(aes(x=mean_wait_r, y=nls_wait_r_fitted)) + geom_abline(intercept=0, slope=1)
@@ -148,7 +228,7 @@ ggsave('./wait_room_fitted_vs_actual.png')
 ```
 Again, nice fit.
 
-## Wait for physician
+### Wait for physician
 
 At this point, the patient is in exam room and is waiting for the physician.
 
@@ -171,7 +251,7 @@ nls_wait_p <- nls(mean_wait_p ~ b1 * (mean_wait_p_dm1 ^ b2) * (exam_time_cv2 ^ b
 summary(nls_wait_p)
 ```
 
-```{r}
+```{r nls_wait_p_plot}
 nls_wait_p_fitted <- predict(nls_wait_p, data=xy_q_wait_p)
 nls_wait_p_df <- data.frame(mean_wait_p=xy_q$mean_wait_p, nls_wait_p_fitted)
 ggplot(nls_wait_p_df) + geom_point(aes(x=mean_wait_p, y=nls_wait_p_fitted)) + geom_abline(intercept=0, slope=1)
@@ -182,7 +262,7 @@ when the mean wait time was zero (literally no one waited at all for a physician
 
 
 
-## Mean time in clinic
+### Mean time in clinic
 
 The total time spent in the clinic is a the summation of time spent in the various
 care and waiting stages. For the total wait from the time after vitals are taken until
@@ -190,7 +270,7 @@ the physician starts the exam is the sum of the two wait times we just modeled -
 for a room and then wait for the physician. Are these two wait times correlated? It
 doesn't really look like it from the plot below.
 
-```{r}
+```{r wait_correlation}
 ggplot(xy_q) + geom_point(aes(x=mean_wait_r, y=mean_wait_p)) + geom_abline(intercept=0, slope=1)
 ```
 
@@ -201,17 +281,21 @@ ggplot(data.frame(atic, mean_time_in_system=xy_q$mean_time_in_system)) + geom_po
 ```
 Fit looks pretty good. 
 
-## Summary of queueing based model fitting
+### Summary of queueing based model fitting
 
 Overall we have developed parsimonious non-linear models driven by the queueing physics
 of the underlying system. Now, let's try more traditional approaches using polynomial
 regression and cubic splines based on just the base scenario input variables.
 
-## Poly modeling data prep
+## Polynomial regression modeling 
+
+Now we'll build order 2, polynomial regresson models as these are commonly accepted for simulation metamodeling and they tend to fit pretty well for queueing type systems as we saw in the patient flow example.
+
+### Data prep for poly modeling
 
 For poly and spline models need to drop the terms that don't vary in the experimental design - prep, post, tat
 
-```{r}
+```{r poly_prep}
 cols_for_poly_no_util <- c('patients_per_clinic_block', 'num_med_techs', 'num_rooms',
                    'vitals_time_mean', 'exam_time_mean', 'exam_time_cv2', 'post_exam_time_mean')
 
@@ -231,7 +315,7 @@ poly_xy_no_util_df <- xy_q %>%
 ```
 
 
-## Poly models for initial wait
+### Poly models for initial wait
 
 For the first model, only the base inputs were used in a poly-2 model.
 
@@ -250,7 +334,7 @@ poly_noutil_wait_i <- lm(mean_wait_i ~ patients_per_clinic_block + I(patients_pe
 summary(poly_noutil_wait_i)
 ```
 
-```{r}
+```{r noutil_wait_i_plot}
 poly_noutil_wait_i_fitted <- predict(poly_noutil_wait_i, data=poly_xy_no_util_df)
 poly_noutil_wait_i_plot_df <- data.frame(mean_wait_i=poly_xy_no_util_df$mean_wait_i, poly_noutil_wait_i_fitted)
 ggplot(poly_noutil_wait_i_plot_df) + geom_point(aes(x=mean_wait_i, y=poly_noutil_wait_i_fitted)) + geom_abline(intercept=0, slope=1)
@@ -279,7 +363,7 @@ poly_util_wait_i <- lm(mean_wait_i ~ patients_per_clinic_block + I(patients_per_
 summary(poly_util_wait_i)
 ```
 
-```{r}
+```{r wait_i_plot}
 poly_util_wait_i_fitted <- predict(poly_util_wait_i, data=poly_xy_util_df)
 poly_util_wait_i_plot_df <- data.frame(mean_wait_i=poly_xy_util_df$mean_wait_i, poly_util_wait_i_fitted)
 ggplot(poly_util_wait_i_plot_df) + geom_point(aes(x=mean_wait_i, y=poly_util_wait_i_fitted)) + geom_abline(intercept=0, slope=1)
@@ -289,7 +373,7 @@ ggsave('./poly_util_wait_initial_fitted_vs_actual.png')
 The utilization terms certainly help. Of course we have a model with 20 terms 
 that are difficult to interpret.
 
-## Poly model for wait for room
+### Poly model for wait for room
 
 We'll just consider the model with the utilization terms.
 
@@ -312,14 +396,14 @@ summary(poly_util_wait_r)
 ```
 
 
-```{r}
+```{r wait_r_plot}
 poly_util_wait_r_fitted <- predict(poly_util_wait_r, data=poly_xy_util_df)
 poly_util_wait_r_plot_df <- data.frame(mean_wait_r=poly_xy_util_df$mean_wait_r, poly_util_wait_r_fitted)
 ggplot(poly_util_wait_r_plot_df) + geom_point(aes(x=mean_wait_r, y=poly_util_wait_r_fitted)) + geom_abline(intercept=0, slope=1)
 ggsave('./poly_util_room_initial_fitted_vs_actual.png')
 ```
 
-## Poly model for mean time in clinic
+### Poly model for mean time in clinic
 
 ```{r poly_util_time_in_system}
 
@@ -339,16 +423,19 @@ poly_util_time_in_system <- lm(mean_time_in_system ~ patients_per_clinic_block +
 summary(poly_util_time_in_system)
 ```
 
-```{r}
+```{r atic_plot}
 poly_util_atic_fitted <- predict(poly_util_time_in_system, data=poly_xy_util_df)
 poly_util_atic_plot_df <- data.frame(mean_time_in_system=poly_xy_util_df$mean_time_in_system, poly_util_atic_fitted)
 ggplot(poly_util_atic_plot_df) + geom_point(aes(x=mean_time_in_system, y=poly_util_atic_fitted)) + geom_abline(intercept=0, slope=1)
 ggsave('./poly_util_atic_initial_fitted_vs_actual.png')
 ```
 
-## Revisit using orthogonal polynomials
+### Revisit using orthogonal polynomials
 
-https://stats.stackexchange.com/questions/253123/what-are-multivariate-orthogonal-polynomials-as-computed-in-r
+I just wanted to see if using orthogonal polynomials makes a difference. I don't expect it to.
+
+* https://stats.stackexchange.com/questions/253123/what-are-multivariate-orthogonal-polynomials-as-computed-in-r
+* https://stats.stackexchange.com/questions/72626/how-to-include-a-linear-and-quadratic-term-when-also-including-interaction-with
 
 ```{r orthopoly_util_wait_i}
 
@@ -368,9 +455,103 @@ orthopoly_util_wait_i <- lm(mean_wait_i ~ poly(patients_per_clinic_block, 2) +
 summary(orthopoly_util_wait_i)
 ```
 
-```{r}
+```{r orthopoly_plot}
 orthopoly_util_wait_i_fitted <- predict(orthopoly_util_wait_i, data=poly_xy_util_df)
 orthopoly_util_wait_i_plot_df <- data.frame(mean_wait_i=poly_xy_util_df$mean_wait_i, orthopoly_util_wait_i_fitted)
 ggplot(orthopoly_util_wait_i_plot_df) + geom_point(aes(x=mean_wait_i, y=orthopoly_util_wait_i_fitted)) + geom_abline(intercept=0, slope=1)
 ggsave('./orthopoly_util_wait_initial_fitted_vs_actual.png')
 ```
+
+Using orthogonal polynomials doesn't appear to buy us much in terms of coefficient interpretation or model fit.
+
+
+
+## Model accuracy assessment using k-crossfold validation
+
+Everything above was just fitting models to the entire set of scenarios (n=4860). Now we'll
+use k-crossfold validation to get a better sense of the relative accuracy of the queueing based models versus the other models.
+
+### Creation of an "out of design" holdout set
+
+In addition to assessing how accurate the various models are within the confines
+of the experimental design, I thought it would also be interesting to assess their
+relative peformance in extrapolation beyond the experimental design. So, I decided
+to treat the highest arrival rate level as the "out of design" holdout set. These
+scenarios correspond to every 5th row in the the `xy_q` dataframe.
+
+Create sequence of row numbers to include in the out of design set and the
+in design set.
+
+```{r ood_holdout}
+
+ood_rows <- seq(5, 4860, 5)
+design_rows <- setdiff(seq(1, 4860,1), ood_rows)
+```
+
+Now subset the main dataframe.
+
+```{r subset_xy_q}
+
+xy_q_out <- xy_q[ood_rows, ]
+xy_q_in <- xy_q[design_rows, ]
+
+```
+
+### k-fold xval on in design scenarios
+
+Unfortunately, the `caret` package does not support passing `method=nsl` to its
+`train` function. The options are:
+
+1. Implement my own modeling interface for use in `caret` - see https://topepo.github.io/caret/using-your-own-model-in-train.html
+2. Use the `rsample` package (part of the tidyverse) to do the resampling
+    - https://cran.r-project.org/web/packages/rsample/vignettes/rsample.html
+    - https://cran.r-project.org/web/packages/rsample/vignettes/Common_Patterns.html
+    
+Option 2 seems to be a better approach. Even though it will force me to have to do
+the model fitting and error metric computations manually, it makes the whole process
+rather transparent and `rsample` can handle the repeated k-fold cross-validation piece.
+In a nutshell, the `rsample::vfold_cv` function just creates an [rsplit object](https://cran.r-project.org/web/packages/rsample/vignettes/rsample.html#individual-resamples-are-rsplit-objects) that contains the dataset partition information.
+
+#### Initial patient wait time model
+
+```{r}
+kfold_number <- 5
+fitControl <- trainControl(
+      method = "cv",
+      number = kfold_number)
+```
+
+
+```{r kfold_waiti_nls}
+seed.resample <- 53
+set.seed(seed.resample) # Each set will use same seed
+
+# Starting guess for the non-linear model fitting via nls()
+init_nls_wait_i <- c(b1=.1, b2=-0.6, b3=2, b4=0.5, b5=2)
+
+# Create formula object
+waiti_nls_formula <- mean_wait_i ~ b1 * (num_med_techs ^ b2) * (mean_wait_i_dm1 ^ b3) * (staff_eff_svc_time_cv2 ^ b5) * (num_rooms ^ b4)
+
+# Do the cross-validation fit
+
+fit <- train(waiti_nls_formula, 
+             data = xy_q_in, 
+             method = method, 
+             trControl = fitControl,
+             ...)
+
+nls_wait_i <- nls(mean_wait_i ~ b1 * (num_med_techs ^ b2) * (mean_wait_i_dm1 ^ b3) * (staff_eff_svc_time_cv2 ^ b5) * (num_rooms ^ b4),
+                 data=xy_q, start=init_nls_wait_i)
+```
+
+
+
+
+
+
+
+
+## Cubic spline models
+
+Cubic splines are another common metamodeling approach. They are flexible and adept at capturing non-linear relationships such as those found in queueing systems.
+
