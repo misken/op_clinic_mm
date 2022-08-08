@@ -499,7 +499,7 @@ xy_q_in <- xy_q[design_rows, ]
 
 ### k-fold xval on in design scenarios
 
-Unfortunately, the `caret` package does not support passing `method=nsl` to its
+Unfortunately, the `caret` package does not support passing `method="nls"` to its
 `train` function. The options are:
 
 1. Implement my own modeling interface for use in `caret` - see https://topepo.github.io/caret/using-your-own-model-in-train.html
@@ -510,16 +510,65 @@ Unfortunately, the `caret` package does not support passing `method=nsl` to its
 Option 2 seems to be a better approach. Even though it will force me to have to do
 the model fitting and error metric computations manually, it makes the whole process
 rather transparent and `rsample` can handle the repeated k-fold cross-validation piece.
-In a nutshell, the `rsample::vfold_cv` function just creates an [rsplit object](https://cran.r-project.org/web/packages/rsample/vignettes/rsample.html#individual-resamples-are-rsplit-objects) that contains the dataset partition information.
+In a nutshell, the `rsample::vfold_cv` function just creates a dataframe of [rsplit object](https://cran.r-project.org/web/packages/rsample/vignettes/rsample.html#individual-resamples-are-rsplit-objects) that contains the dataset partition information for each resampling (fold and repeat). The user can then fit models and
+compute errors on each partition and do whatever kind of error metric averaging desired.
+
+> After digging into tidymodels a bit, I was hoping I could use the entire tidymodels
+workflow in which parsnip provides the same functionallity as caret. Unfortunately,
+parsnip, like caret, does not support `nls()`. This [SO answer](https://stackoverflow.com/questions/71740175/how-to-use-nls-with-caret-to-do-cross-validation) shows use of `rsample` with `nls()`.
+
+This chapter from Kuhn's new book is good reference for more details on using this package effectively - https://www.tmwr.org/resampling.html.
+
+
+```{r partition_in}
+set.seed(57)
+kfold_number <- 10
+kfold_repeats <- 5
+
+in_splits <- vfold_cv(xy_q_in, v = kfold_number, repeats = kfold_repeats)
+
+```
+
+We can see that `in_splits` is a dataframe of `vfold_split` objects (which are just
+special case of `rsplit` objects). 
+
+```{r}
+in_splits
+```
+
+Here's how we can access individual split data. This library uses the
+term *analysis* data instead of *train* and *assessment* data instead
+of *test*.
+
+```{r access_split_data_1}
+first_resample <- in_splits$splits[[1]]
+head(analysis(first_resample))
+head(assessment(first_resample))
+```
+
+Instead of the `analysis` and `assessment` "convenience" functions, we can also
+access the split data like this. 
+
+```{r access_split_data_2}
+head(as.data.frame(first_resample))
+# as.data.frame(first_resample, data="analysis")
+```
+
+By default, the analysis data is returned but
+you can get the assessment data like this:
+
+```{r access_split_data_3}
+head(as.data.frame(first_resample, data = "assessment"))
+
+```
 
 #### Initial patient wait time model
 
-```{r}
-kfold_number <- 5
-fitControl <- trainControl(
-      method = "cv",
-      number = kfold_number)
-```
+
+
+
+
+
 
 
 ```{r kfold_waiti_nls}
