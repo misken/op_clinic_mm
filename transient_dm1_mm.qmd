@@ -888,7 +888,7 @@ set_fit(
     interface = "formula",
     protect = c("formula", "data"),
     func = c(pkg = "stats", fun = "nls"),
-    defaults = list(start = NULL)
+    defaults = list()
   )
 )
 
@@ -941,8 +941,8 @@ Ok, let's see if we can get to work.
 
 ```{r}
 init_nls_wait_i <- c(b1=.1, b2=-0.6, b3=2, b4=0.5, b5=2)
-nonlinear_reg() %>%
-  translate(engine = "nls")
+nonlinear_reg() %>% set_engine(engine = "nls", start = init_nls_wait_i) %>% 
+  translate()
 ```
 
 Initialize a model object.
@@ -952,8 +952,8 @@ Initialize a model object.
 # wait_i_poly_mod <- linear_reg()
 
 # Here's just being explicit - these are the default values so no really needed
-wait_i_nls_mod <- nonlinear_reg() %>% set_engine("nls")
-translate(wait_i_nls_mod, engine="nls")
+wait_i_nls_mod <- nonlinear_reg() %>% set_engine(engine = "nls", start = init_nls_wait_i)
+translate(wait_i_nls_mod)
 ```
 
 ```{r wait_i_nls_mod_formula}
@@ -964,7 +964,7 @@ wait_i_nls_mod_formula <- mean_wait_i ~ b1 * (num_med_techs ^ b2) * (mean_wait_i
 ```{r wait_i_poly_mod_fit}
 wait_i_nls_mod_fit <- 
   wait_i_nls_mod %>% 
-  fit(formula = wait_i_nls_mod_formula, data = xy_q_in_train, start = init_nls_wait_i)
+  fit(formula = wait_i_nls_mod_formula, data = xy_q_in_train)
 
 wait_i_nls_mod_fit
 ```
