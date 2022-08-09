@@ -539,50 +539,7 @@ xy_q_in_train <- training(xy_q_in_split)
 xy_q_in_test <- testing(xy_q_in_split)
 ```
 
-### k-fold cross validation on the training data
 
-```{r partition_in}
-set.seed(57)
-kfold_number <- 10
-# For simplicity, start with 2 kfold process of 10 folds
-kfold_repeats <- 2
-
-in_train_splits <- vfold_cv(xy_q_in_train, v = kfold_number, repeats = kfold_repeats)
-
-```
-
-We can see that `in_splits` is a dataframe of `in_train_splits` objects (which are just
-special case of `rsplit` objects). 
-
-```{r}
-in_train_splits
-```
-
-Here's how we can access individual split data. This library uses the
-term *analysis* data instead of *train* and *assessment* data instead
-of *test*.
-
-```{r access_split_data_1}
-first_resample <- in_train_splits$splits[[1]]
-head(analysis(first_resample))
-head(assessment(first_resample))
-```
-
-Instead of the `analysis` and `assessment` "convenience" functions, we can also
-access the split data like this. 
-
-```{r access_split_data_2}
-head(as.data.frame(first_resample))
-# as.data.frame(first_resample, data="analysis")
-```
-
-By default, the analysis data is returned but
-you can get the assessment data like this:
-
-```{r access_split_data_3}
-head(as.data.frame(first_resample, data = "assessment"))
-
-```
 
 #### Initial patient wait time model - poly
 
@@ -628,6 +585,9 @@ wait_i_poly_mod_fit <-
 
 wait_i_poly_mod_fit
 ```
+
+
+
 
 To get predictions, we can use this fitted model object. Let's test this
 out with just a few rows from the test data.
@@ -677,14 +637,151 @@ wait_i_poly_mod_fit
 ```
 
 
+Since in this first example, we did **not** do resampling, the fit object
+`wait_i_poly_mod_fit` should be the same as we get with the `last_fit` method.
 
+```{r poly_last_fit}
 
+final_poly_res <- last_fit(wait_i_poly_wflow, xy_q_in_split)
+final_poly_res
 
+```
 
+You can go backwards from a results object to the workflow that produced it.
 
+```{r}
+extract_workflow(final_poly_res)
+```
+You can pull out metrics and predictions like this. These predictions should be
+on test. Yep, there are 972 rows in `xy_q_in_test`.
 
+```{r metrics_pred}
+collect_metrics(final_poly_res)
+collect_predictions(final_poly_res) 
+```
 
+Since there are no tuning parameters in this model, doing k-crossfold should still end
+up giving us the same model (and thus performance on test). 
 
+Now that we know the basics of model fitting and workflows, let's combine this
+with resampling.
+
+### k-fold cross validation on the training data
+
+```{r partition_in}
+set.seed(57)
+kfold_number <- 10
+# For simplicity, start with 2 kfold process of 10 folds
+kfold_repeats <- 2
+
+in_train_splits <- vfold_cv(xy_q_in_train, v = kfold_number, repeats = kfold_repeats)
+
+```
+
+We can see that `in_train_splits` is a tibble of `vfold_split` objects (which are just
+special case of `rsplit` objects). 
+
+```{r}
+in_train_splits
+```
+
+Here's how we can access individual split data. This library uses the
+term *analysis* data instead of *train* and *assessment* data instead
+of *test*.
+
+```{r access_split_data_1}
+first_resample <- in_train_splits$splits[[1]]
+head(analysis(first_resample))
+head(assessment(first_resample))
+```
+
+Instead of the `analysis` and `assessment` "convenience" functions, we can also
+access the split data like this. 
+
+```{r access_split_data_2}
+head(as.data.frame(first_resample))
+# as.data.frame(first_resample, data="analysis")
+```
+
+By default, the analysis data is returned but
+you can get the assessment data like this:
+
+```{r access_split_data_3}
+head(as.data.frame(first_resample, data = "assessment"))
+
+```
+
+Now, we need to use our resampling scheme (i.e. `in_train_splits`) within
+our modeling workflow. The basic approach is to call `fit_resamples()` instead of
+`fit()` and pass in the split object instead of a dataframe. See https://www.tmwr.org/resampling.html#resampling-performance.
+
+The `fit_resamples()` function can also accept a `control` object in which
+we can specify things like wanting to save the individual assessment predictions
+for each fold (and repeat).
+
+```{r poly_cv}
+# Specify control options
+keep_pred <- control_resamples(save_pred = TRUE, save_workflow = TRUE)
+
+# Pipe our workflow through fit_resamples
+final_poly_res <- 
+  wait_i_poly_wflow %>% 
+  fit_resamples(resamples = in_train_splits, control = keep_pred)
+
+final_poly_res
+```
+Notice we get metrics and predictions for each repeat, fold combo. We also get
+some notes it appears. Within each repeat, each observation gets held out once
+and so we can scatter actual vs predicted to get
+
+Now we can get our metrics averaged over all 20 repeat, fold combos.
+
+```{r}
+collect_metrics(final_poly_res)
+```
+
+Let's get the predictions.
+
+```{r}
+assess_poly_res <- collect_predictions(final_poly_res)
+```
+
+```{r}
+assess_poly_res %>% 
+  ggplot(aes(x = mean_wait_i, y = .pred)) + 
+  geom_point(alpha = .15) +
+  geom_abline(color = "red") + 
+  coord_obs_pred() + 
+  ylab("Predicted")
+```
+
+Now, let's use `last_fit` to force a refit using the entire training set
+and then use that to make predictions on the test set. This is done in
+one step by passing in the workflow object and the split object used to
+create the original train-test split.
+
+```{r}
+last_poly_res <- last_fit(wait_i_poly_wflow, xy_q_in_split)
+last_poly_res
+```
+
+```{r assess_last_poly_plot}
+assess_last_poly_res <- collect_predictions(last_poly_res)
+
+assess_last_poly_res %>% 
+  ggplot(aes(x = mean_wait_i, y = .pred)) + 
+  geom_point(alpha = .15) +
+  geom_abline(color = "red") + 
+  coord_obs_pred() + 
+  ylab("Predicted")
+
+```
+
+We can get the rmse for the last fit model on the test data with `collect_metrics`.
+
+```{r}
+collect_metrics(last_poly_res)
+```
 
 
 ## Cubic spline models
