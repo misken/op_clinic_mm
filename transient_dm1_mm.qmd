@@ -513,27 +513,49 @@ rather transparent and `rsample` can handle the repeated k-fold cross-validation
 In a nutshell, the `rsample::vfold_cv` function just creates a dataframe of [rsplit object](https://cran.r-project.org/web/packages/rsample/vignettes/rsample.html#individual-resamples-are-rsplit-objects) that contains the dataset partition information for each resampling (fold and repeat). The user can then fit models and
 compute errors on each partition and do whatever kind of error metric averaging desired.
 
-> After digging into tidymodels a bit, I was hoping I could use the entire tidymodels
+After digging into tidymodels a bit, I was hoping I could use the entire tidymodels
 workflow in which parsnip provides the same functionallity as caret. Unfortunately,
 parsnip, like caret, does not support `nls()`. This [SO answer](https://stackoverflow.com/questions/71740175/how-to-use-nls-with-caret-to-do-cross-validation) shows use of `rsample` with `nls()`.
+
+Wait a minute..., not surprisingly, like `caret`, `parsnip` also allows you to *register* your own model type. We'll see if this is easier in `parsnip` than it is in `caret`. See https://www.tidymodels.org/learn/develop/models/. If not, I'll
+just use `rsample` for the cv splitting and do the rest (model fitting, prediction and assessment) manually. 
 
 This chapter from Kuhn's new book is good reference for more details on using this package effectively - https://www.tmwr.org/resampling.html.
 
 
+### Initial split of in_split
+
+The partitioning that we did so far of `xy_q` into `xy_q_in` and `xy_q_out` is
+for eventually seeing how well the various models can extrapolate beyond
+the experimental design space. Now, let's do an initial split of `xy_q_in` into
+training and test dataframes. Then we'll use k-crossfold validation on the training
+data and eventually do final model comparisons on the test data.
+
+```{r}
+# Do the 75/25 split
+xy_q_in_split <- initial_split(xy_q_in)
+# Create train and test dataframes based on the split
+xy_q_in_train <- training(xy_q_in_split)
+xy_q_in_test <- testing(xy_q_in_split)
+```
+
+### k-fold cross validation on the training data
+
 ```{r partition_in}
 set.seed(57)
 kfold_number <- 10
-kfold_repeats <- 5
+# For simplicity, start with 2 kfold process of 10 folds
+kfold_repeats <- 2
 
-in_splits <- vfold_cv(xy_q_in, v = kfold_number, repeats = kfold_repeats)
+in_train_splits <- vfold_cv(xy_q_in_train, v = kfold_number, repeats = kfold_repeats)
 
 ```
 
-We can see that `in_splits` is a dataframe of `vfold_split` objects (which are just
+We can see that `in_splits` is a dataframe of `in_train_splits` objects (which are just
 special case of `rsplit` objects). 
 
 ```{r}
-in_splits
+in_train_splits
 ```
 
 Here's how we can access individual split data. This library uses the
@@ -541,7 +563,7 @@ term *analysis* data instead of *train* and *assessment* data instead
 of *test*.
 
 ```{r access_split_data_1}
-first_resample <- in_splits$splits[[1]]
+first_resample <- in_train_splits$splits[[1]]
 head(analysis(first_resample))
 head(assessment(first_resample))
 ```
@@ -562,36 +584,101 @@ head(as.data.frame(first_resample, data = "assessment"))
 
 ```
 
-#### Initial patient wait time model
+#### Initial patient wait time model - poly
 
+For any modeling interface included in the `parsnip` package, we can do the
+whole modeling workflow using tidymodels tools. So, let's do polynomial
+regression first.
 
-
-
-
-
-
-
-```{r kfold_waiti_nls}
-seed.resample <- 53
-set.seed(seed.resample) # Each set will use same seed
-
-# Starting guess for the non-linear model fitting via nls()
-init_nls_wait_i <- c(b1=.1, b2=-0.6, b3=2, b4=0.5, b5=2)
-
-# Create formula object
-waiti_nls_formula <- mean_wait_i ~ b1 * (num_med_techs ^ b2) * (mean_wait_i_dm1 ^ b3) * (staff_eff_svc_time_cv2 ^ b5) * (num_rooms ^ b4)
-
-# Do the cross-validation fit
-
-fit <- train(waiti_nls_formula, 
-             data = xy_q_in, 
-             method = method, 
-             trControl = fitControl,
-             ...)
-
-nls_wait_i <- nls(mean_wait_i ~ b1 * (num_med_techs ^ b2) * (mean_wait_i_dm1 ^ b3) * (staff_eff_svc_time_cv2 ^ b5) * (num_rooms ^ b4),
-                 data=xy_q, start=init_nls_wait_i)
+```{r}
+#install.packages("tidymodels")
+library(tidymodels)
 ```
+
+```{r wait_i_poly}
+# Initialize parsnip model object with default engine (lm in this case) and mode
+# wait_i_poly_mod <- linear_reg()
+
+# Here's just being explicit - these are the default values so no really needed
+wait_i_poly_mod <- linear_reg(mode = "regression", engine = "lm") 
+
+```
+
+Now let's fit a polynomial regression model using the training data. Start by
+storing the formula in a variable for reusability.
+
+```{r wait_i_poly_mod_formula}
+wait_i_poly_mod_formula <- mean_wait_i ~ patients_per_clinic_block + I(patients_per_clinic_block^2) +
+                         num_med_techs + I(num_med_techs^2) +
+                         num_rooms + I(num_rooms^2) +
+                         vitals_time_mean + I(vitals_time_mean^2) +
+                         exam_time_mean + I(exam_time_mean^2) +
+                         exam_time_cv2 + I(exam_time_cv2^2) +
+                         post_exam_time_mean + I(post_exam_time_mean^2) +
+                         off_util_staff + I(off_util_staff^2) +
+                         off_util_room + I(off_util_room^2) +
+                         off_util_physician + I(off_util_physician^2)
+```
+
+
+```{r wait_i_poly_mod_fit}
+wait_i_poly_mod_fit <- 
+  wait_i_poly_mod %>% 
+  fit(wait_i_poly_mod_formula, data = xy_q_in_train)
+
+wait_i_poly_mod_fit
+```
+
+To get predictions, we can use this fitted model object. Let's test this
+out with just a few rows from the test data.
+
+```{r try_predict}
+xy_q_in_test_small <- xy_q_in_test %>% slice(1:5)
+predict(wait_i_poly_mod_fit, new_data = xy_q_in_test_small)
+```
+
+Easy to combine actuals with predicted.
+
+```{r}
+xy_q_in_test %>% 
+  select(mean_wait_i) %>% 
+  bind_cols(predict(wait_i_poly_mod_fit, new_data = xy_q_in_test)) %>% 
+  ggplot() + geom_point(aes(x=mean_wait_i, y=.pred))
+```
+
+Here's how we can also use tidymodels workflow objects. These are like
+pipelines in sklearn and make it easy to combine preprocessing and model
+fitting into a single entity upon which we can call `fit`. Helps prevent
+knowledge leakage into test data. 
+
+```{r simple_wflow_1}
+wait_i_poly_wflow <- 
+  workflow() %>% 
+  add_model(wait_i_poly_mod)
+
+wait_i_poly_wflow
+```
+
+In this case we don't really have any
+preprocessing but can treat the formula specification step as a 
+preprocessing step.
+
+```{r simple_wflow_2}
+wait_i_poly_wflow <- 
+  wait_i_poly_wflow %>% 
+  add_formula(wait_i_poly_mod_formula)
+
+wait_i_poly_wflow
+```
+
+```{r fit_wflow}
+wait_i_poly_mod_fit <- fit(wait_i_poly_wflow, data = xy_q_in_train)
+wait_i_poly_mod_fit
+```
+
+
+
+
 
 
 
