@@ -140,6 +140,53 @@ ggsave('./initial_wait_fitted_vs_actual.png')
 
 Very nice fit and only five parameters that have physical underpinnings that make sense in the context of queueing models.
 
+```{r rmse_nls_wait_i}
+rmse_vec(nls_wait_i_df$mean_wait_i, nls_wait_i_df$nls_wait_i_fitted)
+```
+
+
+### Linear transform version of wait_i model
+
+We should be able to transform this multiplicative power model into a linear
+model via the application of log function to both sides. 
+
+```{r lm_waiti}
+lm_wait_i <- lm(log(mean_wait_i) ~ log(num_med_techs) + log(mean_wait_i_dm1) +
+                  log(staff_eff_svc_time_cv2) + log(num_rooms),
+                data=xy_q[xy_q$mean_wait_i > 0,])
+
+summary(lm_wait_i)
+```
+The coefficients in the linear model don't match the nonlinear model very well.
+Is it due to the non-negativity restriction?
+
+```{r nls_wait_i_nonneg}
+init_nls_wait_i_nonneg <- c(b1=-3, b2=-3, b3=1.5, b4=1, b5=-1)
+
+# nls_wait_i_nonneg <- nls(mean_wait_i ~ b1 * (num_med_techs ^ b2) * (mean_wait_i_dm1 ^ b3) * (staff_eff_svc_time_cv2 ^ b5) * (num_rooms ^ b4),
+#                  data=xy_q[xy_q$mean_wait_i > 0,], start=init_nls_wait_i_nonneg)
+
+nls_wait_i_nonneg <- nls(mean_wait_i ~ b1 * (num_med_techs ^ b2) * (mean_wait_i_dm1 ^ b3) * (staff_eff_svc_time_cv2 ^ b5) * (num_rooms ^ b4),
+                 data=xy_q[xy_q$mean_wait_i > 0,])
+
+summary(nls_wait_i_nonneg)
+```
+
+What about predictions?
+
+```{r}
+lm_wait_i_fitted <- predict(lm_wait_i, newdata = xy_q)
+
+lm_wait_i_df <- data.frame(mean_wait_i=xy_q$mean_wait_i, pred_mean_wait_i=exp(lm_wait_i_fitted))
+ggplot(lm_wait_i_df) + geom_point(aes(x=mean_wait_i, y=pred_mean_wait_i)) + geom_abline(intercept=0, slope=1)
+ggsave('./initial_wait_lm_fitted_vs_actual.png')
+```
+
+```{r rmse_lm_wait_i}
+rmse_vec(lm_wait_i_df$mean_wait_i, lm_wait_i_df$pred_mean_wait_i)
+```
+
+
 ### Wait for room
 
 Our approach is similar to what was done for the initial wait. The details of the service time cv2 approximation is different because it's based on the time the exam room is in use which includes the wait time for the physician. See Slide 21.
