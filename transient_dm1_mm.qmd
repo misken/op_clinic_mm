@@ -945,13 +945,15 @@ nonlinear_reg() %>% set_engine(engine = "nls", start = init_nls_wait_i) %>%
   translate()
 ```
 
-Initialize a model object.
+Initialize a model object. **IMPORTANT** Notice how the `set_engine` function
+not only sets the engine to "nls" it also allows us to pass engine specific
+optional input arguments such as the starting parameter values for nls().
 
 ```{r wait_i_nls_init}
 # Initialize parsnip model object with default engine (lm in this case) and mode
 # wait_i_poly_mod <- linear_reg()
 
-# Here's just being explicit - these are the default values so no really needed
+
 wait_i_nls_mod <- nonlinear_reg() %>% set_engine(engine = "nls", start = init_nls_wait_i)
 translate(wait_i_nls_mod)
 ```
@@ -968,6 +970,85 @@ wait_i_nls_mod_fit <-
 
 wait_i_nls_mod_fit
 ```
+#### Use nls parsnip with cv
+
+Start by creating a new workflow for this model.
+
+```{r}
+wait_i_nls_wflow <- 
+  workflow() %>% 
+  add_model(wait_i_nls_mod) %>% 
+  add_formula(wait_i_nls_mod_formula)
+
+wait_i_nls_wflow
+```
+
+```{r nls_cv}
+# Specify control options
+keep_pred <- control_resamples(save_pred = TRUE, save_workflow = TRUE)
+
+# Pipe our workflow through fit_resamples
+final_wait_i_nls_res <- 
+  wait_i_nls_wflow %>% 
+  fit_resamples(resamples = in_train_splits, control = keep_pred)
+
+final_wait_i_nls_res
+```
+Notice we get metrics and predictions for each repeat, fold combo. We also get
+some notes it appears. Within each repeat, each observation gets held out once
+and so we can scatter actual vs predicted to get
+
+Now we can get our metrics averaged over all 20 repeat, fold combos.
+
+```{r}
+collect_metrics(final_poly_res)
+```
+
+Let's get the predictions.
+
+```{r}
+assess_poly_res <- collect_predictions(final_poly_res)
+```
+
+```{r}
+assess_poly_res %>% 
+  ggplot(aes(x = mean_wait_i, y = .pred)) + 
+  geom_point(alpha = .15) +
+  geom_abline(color = "red") + 
+  coord_obs_pred() + 
+  ylab("Predicted")
+```
+
+Now, let's use `last_fit` to force a refit using the entire training set
+and then use that to make predictions on the test set. This is done in
+one step by passing in the workflow object and the split object used to
+create the original train-test split.
+
+```{r}
+last_poly_res <- last_fit(wait_i_poly_wflow, xy_q_in_split)
+last_poly_res
+```
+
+```{r assess_last_poly_plot}
+assess_last_poly_res <- collect_predictions(last_poly_res)
+
+assess_last_poly_res %>% 
+  ggplot(aes(x = mean_wait_i, y = .pred)) + 
+  geom_point(alpha = .15) +
+  geom_abline(color = "red") + 
+  coord_obs_pred() + 
+  ylab("Predicted")
+
+```
+
+We can get the rmse for the last fit model on the test data with `collect_metrics`.
+
+```{r}
+collect_metrics(last_poly_res)
+```
+
+
+
 
 ## Cubic spline models
 
