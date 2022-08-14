@@ -208,7 +208,7 @@ nls_wait_r <- nls(mean_wait_r ~ b1 * (mean_wait_r_dm1 ^ b2) * (num_rooms ^ b3) *
 summary(nls_wait_r)
 ```
 
-```{r nls_wait_i_plot}
+```{r nls_wait_r_plot}
 nls_wait_r_fitted <- predict(nls_wait_r, data=xy_q_wait_r)
 nls_wait_r_df <- data.frame(mean_wait_r=xy_q$mean_wait_r, nls_wait_r_fitted)
 ggplot(nls_wait_r_df) + geom_point(aes(x=mean_wait_r, y=nls_wait_r_fitted)) + geom_abline(intercept=0, slope=1)
@@ -216,6 +216,30 @@ ggsave('./wait_room_fitted_vs_actual.png')
 ```
 
 Again, nice fit.
+
+Now let's do the log linear version.
+
+```{r lm_waitr}
+lm_wait_r <- lm(log(mean_wait_r) ~ log(mean_wait_r_dm1) +
+                  log(num_rooms) + log(exam_eff_svc_time_cv2) + log(num_med_techs),
+                data=xy_q[xy_q$mean_wait_r > 0,])
+
+summary(lm_wait_r)
+```
+
+What about predictions?
+
+```{r}
+lm_wait_r_fitted <- predict(lm_wait_r, newdata = xy_q)
+
+lm_wait_r_df <- data.frame(mean_wait_r=xy_q$mean_wait_r, pred_mean_wait_r=exp(lm_wait_r_fitted))
+ggplot(lm_wait_r_df) + geom_point(aes(x=mean_wait_r, y=pred_mean_wait_r)) + geom_abline(intercept=0, slope=1)
+ggsave('./wait_r_lm_fitted_vs_actual.png')
+```
+
+```{r rmse_lm_wait_i}
+rmse_vec(lm_wait_r_df$mean_wait_r, lm_wait_r_df$pred_mean_wait_r)
+```
 
 ### Wait for physician
 
