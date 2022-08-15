@@ -145,47 +145,6 @@ rmse_vec(nls_wait_i_df$mean_wait_i, nls_wait_i_df$nls_wait_i_fitted)
 ```
 
 
-### Linear transform version of wait_i model
-
-We should be able to transform this multiplicative power model into a linear
-model via the application of log function to both sides. 
-
-```{r lm_waiti}
-lm_wait_i <- lm(log(mean_wait_i) ~ log(num_med_techs) + log(mean_wait_i_dm1) +
-                  log(staff_eff_svc_time_cv2) + log(num_rooms),
-                data=xy_q[xy_q$mean_wait_i > 0,])
-
-summary(lm_wait_i)
-```
-The coefficients in the linear model don't match the nonlinear model very well.
-Is it due to the non-negativity restriction?
-
-```{r nls_wait_i_nonneg}
-init_nls_wait_i_nonneg <- c(b1=-3, b2=-3, b3=1.5, b4=1, b5=-1)
-
-# nls_wait_i_nonneg <- nls(mean_wait_i ~ b1 * (num_med_techs ^ b2) * (mean_wait_i_dm1 ^ b3) * (staff_eff_svc_time_cv2 ^ b5) * (num_rooms ^ b4),
-#                  data=xy_q[xy_q$mean_wait_i > 0,], start=init_nls_wait_i_nonneg)
-
-nls_wait_i_nonneg <- nls(mean_wait_i ~ b1 * (num_med_techs ^ b2) * (mean_wait_i_dm1 ^ b3) * (staff_eff_svc_time_cv2 ^ b5) * (num_rooms ^ b4),
-                 data=xy_q[xy_q$mean_wait_i > 0,])
-
-summary(nls_wait_i_nonneg)
-```
-
-What about predictions?
-
-```{r}
-lm_wait_i_fitted <- predict(lm_wait_i, newdata = xy_q)
-
-lm_wait_i_df <- data.frame(mean_wait_i=xy_q$mean_wait_i, pred_mean_wait_i=exp(lm_wait_i_fitted))
-ggplot(lm_wait_i_df) + geom_point(aes(x=mean_wait_i, y=pred_mean_wait_i)) + geom_abline(intercept=0, slope=1)
-ggsave('./initial_wait_lm_fitted_vs_actual.png')
-```
-
-```{r rmse_lm_wait_i}
-rmse_vec(lm_wait_i_df$mean_wait_i, lm_wait_i_df$pred_mean_wait_i)
-```
-
 
 ### Wait for room
 
@@ -217,29 +176,7 @@ ggsave('./wait_room_fitted_vs_actual.png')
 
 Again, nice fit.
 
-Now let's do the log linear version.
 
-```{r lm_waitr}
-lm_wait_r <- lm(log(mean_wait_r) ~ log(mean_wait_r_dm1) +
-                  log(num_rooms) + log(exam_eff_svc_time_cv2) + log(num_med_techs),
-                data=xy_q[xy_q$mean_wait_r > 0,])
-
-summary(lm_wait_r)
-```
-
-What about predictions?
-
-```{r}
-lm_wait_r_fitted <- predict(lm_wait_r, newdata = xy_q)
-
-lm_wait_r_df <- data.frame(mean_wait_r=xy_q$mean_wait_r, pred_mean_wait_r=exp(lm_wait_r_fitted))
-ggplot(lm_wait_r_df) + geom_point(aes(x=mean_wait_r, y=pred_mean_wait_r)) + geom_abline(intercept=0, slope=1)
-ggsave('./wait_r_lm_fitted_vs_actual.png')
-```
-
-```{r rmse_lm_wait_i}
-rmse_vec(lm_wait_r_df$mean_wait_r, lm_wait_r_df$pred_mean_wait_r)
-```
 
 ### Wait for physician
 
@@ -377,7 +314,7 @@ The utilization terms certainly help. Of course we have a model with 20 terms th
 
 ### Poly model for wait for room
 
-We'll just consider the model with the utilization terms.
+We'll just consider the model that includes the utilization terms.
 
 ```{r poly_util_wait_r}
 
@@ -525,10 +462,6 @@ xy_q_in_test <- testing(xy_q_in_split)
 
 For any modeling interface included in the `parsnip` package, we can do the whole modeling workflow using tidymodels tools. So, let's do polynomial regression first.
 
-```{r}
-#install.packages("tidymodels")
-#library(tidymodels)
-```
 
 ```{r wait_i_poly_mod}
 # Initialize parsnip model object with default engine (lm in this case) and mode
@@ -640,8 +573,9 @@ Now that we know the basics of model fitting and workflows, let's combine this w
 
 ```{r partition_in}
 set.seed(57)
+# Number of folds
 kfold_number <- 5
-# For simplicity, start with 2 kfold process of 10 folds
+# Number of repeats of entire k-fold process
 kfold_repeats <- 10
 
 in_train_splits <- vfold_cv(xy_q_in_train, v = kfold_number, repeats = kfold_repeats)
@@ -694,7 +628,7 @@ final_poly_res
 
 Notice we get metrics and predictions for each repeat, fold combo. We also get some notes it appears. Within each repeat, each observation gets held out once and so we can scatter actual vs predicted to get
 
-Now we can get our metrics averaged over all 20 repeat, fold combos.
+Now we can get our metrics averaged over all 50 repeat, fold combos.
 
 ```{r}
 collect_metrics(final_poly_res)
@@ -771,7 +705,6 @@ show_model_info("nonlinear_reg")
 
 ```
 
-This might be helpful as a template.
 
 **Step 2. Create the model function**
 
@@ -801,14 +734,14 @@ nonlinear_reg <-
     # Capture the arguments in quosures
     args <- list(start = rlang::enquo(start))
     
-    # Save some empty slots for future parts of the specification
+    # Create specification
     new_model_spec(
       "nonlinear_reg",
       args = args,
-      eng_args = NULL,
       mode = mode,
-      method = NULL,
-      engine = NULL
+      engine = NULL,
+      eng_args = NULL,
+      method = NULL
     )
   }
 ```
@@ -917,6 +850,7 @@ xy_q_in_test %>%
   bind_cols(predict(wait_i_nls_mod_fit, new_data = xy_q_in_test)) %>% 
   ggplot() + geom_point(aes(x=mean_wait_i, y=.pred)) + geom_abline(intercept = 0, slope = 1)
 ```
+
 Now let's repeat the above but with one of the split objects.
 
 ```{r get_fold}
@@ -938,15 +872,28 @@ assessment(first_resample) %>%
   ggplot() + geom_point(aes(x=mean_wait_i, y=.pred)) + geom_abline(intercept = 0, slope = 1)
 ```
 
-
 #### Use nls parsnip with cv
 
-Start by creating a new workflow for this model.
+> Here's where the pain starts. From above, clearly we have created our own
+parsnip model object based on the nls() function. It works on the whole
+training set and it works on some specific fold of the cv process. But...,
+as we'll see below, instead of calling fit(), we need to call fit_resample() and
+strangely enough the implementation of fit_resample() in the tune package is not consistent with that
+of fit() when it comes to processing the formula object. The fit_resample() function
+does not like nonlinear functions (I think it's actually the recipes package) nor does it even like formula objects that
+contain things like log(x). The error message seems to indicate that we need
+to use the *step functions* in the recipes package to implement all but simple
+linear formula objects.
+
+Start by creating a new workflow for this model. Here's what the model object
+looks like.
 
 ```{r}
 wait_i_nls_mod
 ```
 
+If we try to do this with no recipe, but just use `add_formula` from the workflows package,
+here's what happens. We get an "invalid power in formula" error.
 
 ```{r}
 wait_i_nls_wflow <- 
@@ -954,11 +901,18 @@ wait_i_nls_wflow <-
   add_model(wait_i_nls_mod) %>% 
   add_formula(wait_i_nls_mod_formula)
 
+# Pipe our workflow through fit_resamples
+final_wait_i_nls_res <- 
+  wait_i_nls_wflow %>% 
+  fit_resamples(resamples = in_train_splits, control = keep_pred)
+
 wait_i_nls_wflow
 ```
-The following should work but does not. The errors seem to suggest a formula processing issue.
-The `fit` function is part of parsnips but `fit_resamples` is in the tune package. The following
-[SO post](https://stackoverflow.com/questions/60595620/fit-resamples-with-ranger-package-fails) talks about a similar error and maybe this solution (use simple recipe instead of formula) will work. I'm guessing the formula processor in recipes is more robust.
+
+The following should work but does not. The errors seem to suggest a formula processing issue. The `fit` function is part of parsnips but `fit_resamples` is in the tune package. The following [SO post](https://stackoverflow.com/questions/60595620/fit-resamples-with-ranger-package-fails) talks about a similar error and maybe this solution (use recipe instead of formula) will work. However,
+as we see, the recipes package is unhappy too. It views the nonlinear function as an
+"in-line function" and says to "use steps to define baking actions". The actual
+`inline_check()` function is here: https://github.com/tidymodels/recipes/blob/main/R/recipe.R
 
 ```{r nls_cv_wf}
 wait_i_nls_wflow_rec <- 
@@ -977,6 +931,23 @@ final_wait_i_nls_res <-
 final_wait_i_nls_res
 ```
 
+> So, unless we can figure out how to use the recipes step functions to represent
+our nonlinear model, we are going to have to do a whole bunch of manual
+looping through the k-crossfold splits to fit models and assess their performance.
+After looking at the recipes package, I don't this is doable since the 
+exponents in our nonlinear function are the parameters we are trying to estimate.
+Recipes is for premodel fitting transformations such as log transforms or splines.
+Note to self - can use it for creating the spline models as step functions exist
+for both B-splines and natural splines.
+
+
+
+
+
+
+
+
+
 ```{r nls_cv_wf_recipe}
 # Specify control options
 keep_pred <- control_resamples(save_pred = TRUE, save_workflow = TRUE)
@@ -988,6 +959,7 @@ final_wait_i_nls_res <-
 
 final_wait_i_nls_res
 ```
+
 ```{r nls_cv_nowf}
 # Specify control options
 keep_pred <- control_resamples(save_pred = TRUE, save_workflow = TRUE)
@@ -1052,3 +1024,73 @@ collect_metrics(last_poly_res)
 ## Cubic spline models
 
 Cubic splines are another common metamodeling approach. They are flexible and adept at capturing non-linear relationships such as those found in queueing systems.
+
+## Linear transform version of wait_i model
+
+We should be able to transform this multiplicative power model into a linear model via the application of log function to both sides. 
+
+> Ummm, actually no. I forgot about the error term. So, the log transformed model and the
+original nonlinear model are not equivalent. That's why the fits below aren't as good
+as the multiplicative nonlinear model.
+
+```{r lm_waiti}
+lm_wait_i <- lm(log(mean_wait_i) ~ log(num_med_techs) + log(mean_wait_i_dm1) +
+                  log(staff_eff_svc_time_cv2) + log(num_rooms),
+                data=xy_q[xy_q$mean_wait_i > 0,])
+
+summary(lm_wait_i)
+```
+
+The coefficients in the linear model don't match the nonlinear model very well. Is it due to the non-negativity restriction?
+
+```{r nls_wait_i_nonneg}
+init_nls_wait_i_nonneg <- c(b1=-3, b2=-3, b3=1.5, b4=1, b5=-1)
+
+# nls_wait_i_nonneg <- nls(mean_wait_i ~ b1 * (num_med_techs ^ b2) * (mean_wait_i_dm1 ^ b3) * (staff_eff_svc_time_cv2 ^ b5) * (num_rooms ^ b4),
+#                  data=xy_q[xy_q$mean_wait_i > 0,], start=init_nls_wait_i_nonneg)
+
+nls_wait_i_nonneg <- nls(mean_wait_i ~ b1 * (num_med_techs ^ b2) * (mean_wait_i_dm1 ^ b3) * (staff_eff_svc_time_cv2 ^ b5) * (num_rooms ^ b4),
+                 data=xy_q[xy_q$mean_wait_i > 0,])
+
+summary(nls_wait_i_nonneg)
+```
+
+What about predictions?
+
+```{r}
+lm_wait_i_fitted <- predict(lm_wait_i, newdata = xy_q)
+
+lm_wait_i_df <- data.frame(mean_wait_i=xy_q$mean_wait_i, pred_mean_wait_i=exp(lm_wait_i_fitted))
+ggplot(lm_wait_i_df) + geom_point(aes(x=mean_wait_i, y=pred_mean_wait_i)) + geom_abline(intercept=0, slope=1)
+ggsave('./initial_wait_lm_fitted_vs_actual.png')
+```
+
+```{r rmse_lm_wait_i}
+rmse_vec(lm_wait_i_df$mean_wait_i, lm_wait_i_df$pred_mean_wait_i)
+```
+
+Here's the wait for room model. Again, not nearly as good as the nonlinear model.
+
+Now let's do the log linear version.
+
+```{r lm_waitr}
+lm_wait_r <- lm(log(mean_wait_r) ~ log(mean_wait_r_dm1) +
+                  log(num_rooms) + log(exam_eff_svc_time_cv2) + log(num_med_techs),
+                data=xy_q[xy_q$mean_wait_r > 0,])
+
+summary(lm_wait_r)
+```
+
+What about predictions?
+
+```{r}
+lm_wait_r_fitted <- predict(lm_wait_r, newdata = xy_q)
+
+lm_wait_r_df <- data.frame(mean_wait_r=xy_q$mean_wait_r, pred_mean_wait_r=exp(lm_wait_r_fitted))
+ggplot(lm_wait_r_df) + geom_point(aes(x=mean_wait_r, y=pred_mean_wait_r)) + geom_abline(intercept=0, slope=1)
+ggsave('./wait_r_lm_fitted_vs_actual.png')
+```
+
+```{r rmse_lm_wait_i}
+rmse_vec(lm_wait_r_df$mean_wait_r, lm_wait_r_df$pred_mean_wait_r)
+```
