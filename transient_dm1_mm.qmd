@@ -616,17 +616,20 @@ The `fit_resamples()` function can also accept a `control` object in which we ca
 
 ```{r poly_cv}
 # Specify control options
-keep_pred <- control_resamples(save_pred = TRUE, save_workflow = TRUE)
+keep_pred <- control_resamples(save_pred = TRUE)
 
 # Pipe our workflow through fit_resamples
-final_poly_res <- 
+wait_i_final_poly_res <- 
   wait_i_poly_wflow %>% 
   fit_resamples(resamples = in_train_splits, control = keep_pred)
 
-final_poly_res
+wait_i_final_poly_res
+```
+```{r}
+final_poly_res[1,".metrics"][[1]]
 ```
 
-Notice we get metrics and predictions for each repeat, fold combo. We also get some notes it appears. Within each repeat, each observation gets held out once and so we can scatter actual vs predicted to get
+Notice we get metrics and predictions (if we want - see commented out lines) for each repeat, fold combo. We also get some notes it appears. Within each repeat, each observation gets held out once and the error metrics are based on those hold out samples.
 
 Now we can get our metrics averaged over all 50 repeat, fold combos.
 
@@ -652,14 +655,14 @@ assess_poly_res %>%
 Now, let's use `last_fit` to force a refit using the entire training set and then use that to make predictions on the test set. This is done in one step by passing in the workflow object and the split object used to create the original train-test split.
 
 ```{r}
-last_poly_res <- last_fit(wait_i_poly_wflow, xy_q_in_split)
-last_poly_res
+wait_i_last_poly_res <- last_fit(wait_i_poly_wflow, xy_q_in_split)
+wait_i_last_poly_res
 ```
 
 ```{r assess_last_poly_plot}
-assess_last_poly_res <- collect_predictions(last_poly_res)
+assess_wait_i_last_poly_res <- collect_predictions(wait_i_last_poly_res)
 
-assess_last_poly_res %>% 
+assess_wait_i_last_poly_res %>% 
   ggplot(aes(x = mean_wait_i, y = .pred)) + 
   geom_point(alpha = .15) +
   geom_abline(color = "red") + 
@@ -671,7 +674,7 @@ assess_last_poly_res %>%
 We can get the rmse for the last fit model on the test data with `collect_metrics`.
 
 ```{r}
-collect_metrics(last_poly_res)
+collect_metrics(wait_i_last_poly_res)
 ```
 
 #### Initial patient wait time model - nls
@@ -826,7 +829,7 @@ translate(wait_i_nls_mod)
 ```
 
 ```{r wait_i_nls_mod_formula}
-wait_i_nls_mod_formula <- mean_wait_i ~ b1 * (num_med_techs ^ b2) * (mean_wait_i_dm1 ^ b3) * (staff_eff_svc_time_cv2 ^ b5) * (num_rooms ^ b4)
+wait_i_nls_mod_formula <- mean_wait_i ~ b1 * (num_med_techs ^ b2) * (mean_wait_i_dm1 ^ b3) *(num_rooms ^ b4) * (staff_eff_svc_time_cv2 ^ b5)
 ```
 
 ```{r wait_i_poly_mod_fit}
@@ -955,6 +958,119 @@ results <- parsnip_tps(wait_i_nls_mod, wait_i_nls_mod_formula, train_data, test_
                         scenario = 'just testing', method = 'nls') 
 ```
 
+```{r}
+results$g_act_vs_pred
+```
+```{r}
+final_poly_res[1,".metrics"][[1]]
+```
+
+We need to loop over the splits dataframe.
+
+```{r}
+# Container list for results
+listsize <- kfold_number * kfold_repeats
+# results_for_df <- vector("list", listsize)
+metrics_for_tibble <- vector("list", listsize)
+  
+#for( i in 1:2 ) {
+for( i in as.numeric(rownames(in_train_splits)) ) {  
+   repeatid <- in_train_splits[i, "id"]
+   foldid <- in_train_splits[i, "id2"]
+   
+   repeat_num <- as.numeric(str_extract(repeatid, "\\d+"))
+   fold_num <- as.numeric(str_extract(foldid, "\\d+"))
+   
+   resample <- in_train_splits$splits[[i]]
+   train_data <- analysis(resample)
+   test_data <- assessment(resample)
+   
+   result <- parsnip_tps(wait_i_nls_mod, wait_i_nls_mod_formula, train_data, test_data,
+                        scenario = 'initial_wait', method = 'nls')
+   
+   rmse_metric_for_df <- list(.metric="rmse",
+                              .estimator="standard",
+                              .estimate=result$rmse_test,
+                              .config="Preprocessor1_Model1")
+
+   mae_metric_for_df <- list(.metric="mae",
+                              .estimator="standard",
+                              .estimate=result$mae_test,
+                              .config="Preprocessor1_Model1")
+   
+   metrics_tibble <- as_tibble(rbind(unlist(rmse_metric_for_df), unlist(mae_metric_for_df)))
+   
+   metrics_tibble$.estimate <- as.numeric(metrics_tibble$.estimate)
+      
+   # metrics_for_df <- list(repeat_num=repeat_num,
+   #                        fold_num=fold_num,
+   #                        rmse_train=result$rmse_train,
+   #                        rmse_test=result$rmse_test,
+   #                        mae_train=result$mae_train,
+   #                        mae_test=result$mae_test)
+   
+   # results_for_df[[i]] <- metrics_for_df
+   metrics_for_tibble[[i]] <- metrics_tibble
+}
+
+#wait_i_kfold_results_df <- as.data.frame(do.call(rbind, results_for_df))
+# https://stackoverflow.com/questions/59928743/converting-a-list-of-lists-to-a-dataframe-in-r-the-tidyverse-way
+# wait_i_kfold_results_df <- results_for_df %>%
+#   map(as_tibble) %>%
+#   reduce(bind_rows)
+
+wait_i_kfold_res <- as_tibble(bind_cols(in_train_splits, tibble(.metrics=metrics_for_tibble)))
+
+```
+
+ahhh, instead of trying to coerce the class of my tibble to whatever
+`collect_metrics` wants, let's just call the specific function flavor directly.
+Note the ::: since this function isn't exported.
+
+```{r}
+tune:::collect_metrics.tune_results(wait_i_kfold_res, summarize = FALSE)
+```
+
+Averaging over them can then be done like this. 
+```{r}
+tune:::collect_metrics.tune_results(wait_i_kfold_res, summarize = TRUE)
+```
+
+However, this is NOT the same as doing a `last_fit` on the entire training
+data and assessing on the test data. To do that, we need to consider the initial split.
+
+```{r}
+
+train_data <- analysis(xy_q_in_split)
+test_data <- assessment(xy_q_in_split)
+```
+
+Now we can do the fit.
+
+```{r}
+result <- parsnip_tps(wait_i_nls_mod, wait_i_nls_mod_formula, train_data, test_data,
+                        scenario = 'initial_wait', method = 'nls')
+   
+rmse_metric_for_df <- list(.metric="rmse",
+                            .estimator="standard",
+                            .estimate=result$rmse_test,
+                            .config="Preprocessor1_Model1")
+
+mae_metric_for_df <- list(.metric="mae",
+                            .estimator="standard",
+                            .estimate=result$mae_test,
+                            .config="Preprocessor1_Model1")
+ 
+metrics_tibble <- as_tibble(rbind(unlist(rmse_metric_for_df), unlist(mae_metric_for_df)))
+ 
+metrics_tibble$.estimate <- as.numeric(metrics_tibble$.estimate)
+ 
+wait_i_final_res <- as_tibble(bind_cols(xy_q_in_split, tibble(.metrics=metrics_tibble)))
+
+```
+
+
+
 
 
 
@@ -1037,6 +1153,11 @@ We can get the rmse for the last fit model on the test data with `collect_metric
 ```{r}
 collect_metrics(last_poly_res)
 ```
+
+
+
+
+
 
 ## Cubic spline models
 
