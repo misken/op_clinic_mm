@@ -8,7 +8,7 @@ editor: visual
 library(ggplot2)
 library(dplyr)
 library(tidymodels)
-#library(caret)
+library(MLmetrics)
 ```
 
 ## Background on the simulation study
@@ -939,6 +939,23 @@ exponents in our nonlinear function are the parameters we are trying to estimate
 Recipes is for premodel fitting transformations such as log transforms or splines.
 Note to self - can use it for creating the spline models as step functions exist
 for both B-splines and natural splines.
+
+
+Let's start creating our own machinery for this.
+
+```{r}
+source('lib/parsnip_tps.R')
+```
+
+```{r}
+first_resample <- in_train_splits$splits[[1]]
+train_data <- analysis(first_resample)
+test_data <- assessment(first_resample)
+results <- parsnip_tps(wait_i_nls_mod, wait_i_nls_mod_formula, train_data, test_data,
+                        scenario = 'just testing', method = 'nls') 
+```
+
+
 
 
 
