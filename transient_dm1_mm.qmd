@@ -1065,9 +1065,15 @@ metrics_tibble <- as_tibble(rbind(unlist(rmse_metric_for_df), unlist(mae_metric_
  
 metrics_tibble$.estimate <- as.numeric(metrics_tibble$.estimate)
  
-wait_i_final_res <- as_tibble(bind_cols(xy_q_in_split, tibble(.metrics=metrics_tibble)))
+wait_i_last_nls_res <- as_tibble(bind_cols(xy_q_in_split$id, tibble(.metrics=metrics_tibble)))
 
+tune:::collect_metrics.tune_results(wait_i_last_nls_res, summarize = FALSE)
 ```
+
+```{r}
+collect_metrics(wait_i_last_poly_res)
+```
+
 
 
 
