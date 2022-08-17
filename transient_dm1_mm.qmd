@@ -271,7 +271,9 @@ assess_wait_i_last_poly_res %>%
   geom_point(alpha = .15) +
   geom_abline(color = "red") + 
   coord_obs_pred() + 
-  ylab("Predicted")
+  xlab("Actual mean initial wait time (min)") +
+  ylab("Metamodel prediction") +
+  ggtitle("Polynomial regression model")
 ```
 Ok, that's the poly model. Let's do natural cubic spline next.
 
@@ -360,7 +362,9 @@ assess_wait_i_last_spline_res %>%
   geom_point(alpha = .15) +
   geom_abline(color = "red") + 
   coord_obs_pred() + 
-  ylab("Predicted")
+  xlab("Actual mean initial wait time (min)") +
+  ylab("Metamodel prediction") +
+  ggtitle("Natural spline regression model")
 ```
 
 
