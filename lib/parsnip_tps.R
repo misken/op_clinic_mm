@@ -2,6 +2,78 @@
 
 # Let's write a somewhat generic function for automating a model train, predict, summarize cycle.
 
+parsnip_last_fit <- function(model, model_formula, init_split) {
+  
+  train_data <- analysis(init_split)
+  test_data <- assessment(init_split)
+  
+  result <- parsnip_tps(model, model_formula, train_data, test_data)
+  
+  rmse_metric_for_df <- list(.metric="rmse",
+                             .estimator="standard",
+                             .estimate=result$rmse_test,
+                             .config="Preprocessor1_Model1")
+  
+  mae_metric_for_df <- list(.metric="mae",
+                            .estimator="standard",
+                            .estimate=result$mae_test,
+                            .config="Preprocessor1_Model1")
+  
+  metrics_tibble <- as_tibble(rbind(unlist(rmse_metric_for_df), unlist(mae_metric_for_df)))
+  
+  metrics_tibble$.estimate <- as.numeric(metrics_tibble$.estimate)
+  
+  metrics_summary <- as_tibble(bind_cols(init_split$id, tibble(.metrics=metrics_tibble)))
+  act_vs_pred_plot <- result$g_act_vs_pred
+  
+  results <- list(metrics_summary=metrics_summary, act_vs_pred_plot=act_vs_pred_plot)
+  
+  
+}
+
+parsnip_fit_resamples <- function(model, model_formula, resamples, kfold_number, kfold_repeats) {
+  
+  # Container list for results
+  listsize <- kfold_number * kfold_repeats
+  metrics_for_tibble <- vector("list", listsize)
+  
+  for( i in as.numeric(rownames(resamples)) ) {  
+    repeatid <- resamples[i, "id"]
+    foldid <- resamples[i, "id2"]
+    
+    repeat_num <- as.numeric(str_extract(repeatid, "\\d+"))
+    fold_num <- as.numeric(str_extract(foldid, "\\d+"))
+    
+    resample <- resamples$splits[[i]]
+    train_data <- analysis(resample)
+    test_data <- assessment(resample)
+    
+    fold_results <- parsnip_tps(model, model_formula, train_data, test_data)
+    
+    rmse_metric_for_df <- list(.metric="rmse",
+                               .estimator="standard",
+                               .estimate=fold_results$rmse_test,
+                               .config="Preprocessor1_Model1")
+    
+    mae_metric_for_df <- list(.metric="mae",
+                              .estimator="standard",
+                              .estimate=fold_results$mae_test,
+                              .config="Preprocessor1_Model1")
+    
+    metrics_tibble <- as_tibble(rbind(unlist(rmse_metric_for_df), unlist(mae_metric_for_df)))
+    
+    metrics_tibble$.estimate <- as.numeric(metrics_tibble$.estimate)
+    
+
+    metrics_for_tibble[[i]] <- metrics_tibble
+  }
+  
+
+  
+  results <- as_tibble(bind_cols(in_train_splits, tibble(.metrics=metrics_for_tibble)))
+  
+}
+
 
 parsnip_tps <- function(model, model_formula, train_data, test_data,
                         scenario = NULL, method = 'nls') 
