@@ -1089,7 +1089,7 @@ wait_i_last_res_fun$act_vs_pred_plot
 ```
 Awesome, it works. Results match the manual approach.
 
-Let's do the whole workflow for the average time in clinic.
+Let's do the whole workflow for the wait for room.
 
 ```{r}
 init_nls_wait_r <- c(b1=1.0, b2=1.0, b3=.5, b4=-0.5)
@@ -1108,6 +1108,56 @@ wait_r_last_res$act_vs_pred_plot
 
 ```
 
+Now, let's see what poly model looks like for wait_r
+
+```{r wait_r_poly_mod2}
+# Create model
+wait_r_poly_mod <- linear_reg(mode = "regression") %>% 
+  set_engine(engine = "lm")
+
+# Create model formula
+wait_r_poly_mod_formula <- mean_wait_r ~ patients_per_clinic_block + I(patients_per_clinic_block^2) +
+                         num_med_techs + I(num_med_techs^2) +
+                         num_rooms + I(num_rooms^2) +
+                         vitals_time_mean + I(vitals_time_mean^2) +
+                         exam_time_mean + I(exam_time_mean^2) +
+                         exam_time_cv2 + I(exam_time_cv2^2) +
+                         post_exam_time_mean + I(post_exam_time_mean^2) +
+                         off_util_staff + I(off_util_staff^2) +
+                         off_util_room + I(off_util_room^2) +
+                         off_util_physician + I(off_util_physician^2)
+
+wait_r_poly_wflow <- 
+  workflow() %>% 
+  add_model(wait_r_poly_mod) %>% 
+  add_formula(wait_r_poly_mod_formula)
+
+# Specify control options
+keep_pred <- control_resamples(save_pred = TRUE)
+
+# Pipe our workflow through fit_resamples
+wait_r_kfold_poly_res <- 
+  wait_r_poly_wflow %>% 
+  fit_resamples(resamples = in_train_splits, control = keep_pred)
+
+collect_metrics(wait_r_kfold_poly_res)
+
+# Do last fit
+wait_r_last_poly_res <- last_fit(wait_r_poly_wflow, xy_q_in_split)
+
+collect_metrics(wait_r_last_poly_res)
+
+assess_wait_r_last_poly_res <- collect_predictions(wait_r_last_poly_res)
+
+assess_wait_r_last_poly_res %>% 
+  ggplot(aes(x = mean_wait_r, y = .pred)) + 
+  geom_point(alpha = .15) +
+  geom_abline(color = "red") + 
+  coord_obs_pred() + 
+  ylab("Predicted")
+
+
+```
 
 
 
