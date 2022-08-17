@@ -1083,10 +1083,28 @@ tune:::collect_metrics.tune_results(wait_i_kfold_res_fun, summarize = TRUE)
 
 wait_i_last_res_fun <- parsnip_last_fit(wait_i_nls_mod, wait_i_nls_mod_formula, xy_q_in_split)
 
-tune:::collect_metrics.tune_results(wait_i_last_res_fun, summarize = FALSE)
+tune:::collect_metrics.tune_results(wait_i_last_res_fun$metrics_summary, summarize = FALSE)
+
+wait_i_last_res_fun$act_vs_pred_plot
 ```
+Awesome, it works. Results match the manual approach.
+
+Let's do the whole workflow for the average time in clinic.
 
 ```{r}
+init_nls_wait_r <- c(b1=1.0, b2=1.0, b3=.5, b4=-0.5)
+wait_r_nls_mod <- nonlinear_reg() %>% set_engine(engine = "nls", start = init_nls_wait_r)
+wait_r_nls_mod_formula <- mean_wait_r ~ b1 * (mean_wait_r_dm1 ^ b2) * (num_rooms ^ b3) * (exam_eff_svc_time_cv2 ^ b4)
+
+wait_r_kfold_res <- parsnip_fit_resamples(wait_r_nls_mod, wait_r_nls_mod_formula, in_train_splits, kfold_number, kfold_repeats)
+
+tune:::collect_metrics.tune_results(wait_r_kfold_res, summarize = TRUE)
+
+wait_r_last_res <- parsnip_last_fit(wait_r_nls_mod, wait_r_nls_mod_formula, xy_q_in_split)
+
+tune:::collect_metrics.tune_results(wait_r_last_res$metrics_summary, summarize = FALSE)
+
+wait_r_last_res$act_vs_pred_plot
 
 ```
 
