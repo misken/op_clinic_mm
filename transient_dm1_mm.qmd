@@ -1133,7 +1133,7 @@ wait_r_poly_wflow <-
   add_formula(wait_r_poly_mod_formula)
 
 # Specify control options
-keep_pred <- control_resamples(save_pred = TRUE)
+keep_pred <- control_resamples(save_pred = FALSE)
 
 # Pipe our workflow through fit_resamples
 wait_r_kfold_poly_res <- 
@@ -1162,94 +1162,64 @@ assess_wait_r_last_poly_res %>%
 
 
 
-
-
-
-
-
-
-
-```{r nls_cv_wf_recipe}
-# Specify control options
-keep_pred <- control_resamples(save_pred = TRUE, save_workflow = TRUE)
-
-# Pipe our workflow through fit_resamples
-final_wait_i_nls_res <- 
-  wait_i_nls_wflow %>% 
-  fit_resamples(resamples = in_train_splits, control = keep_pred)
-
-final_wait_i_nls_res
-```
-
-```{r nls_cv_nowf}
-# Specify control options
-keep_pred <- control_resamples(save_pred = TRUE, save_workflow = TRUE)
-
-# Pipe our workflow through fit_resamples
-final_wait_i_nls_res <- fit_resamples(wait_i_nls_mod, 
-                                      preprocessor = wait_i_nls_mod_formula, 
-                                      resamples = in_train_splits, 
-                                      control = keep_pred)
-
-final_wait_i_nls_res
-```
-
-Notice we get metrics and predictions for each repeat, fold combo. We also get some notes it appears. Within each repeat, each observation gets held out once and so we can scatter actual vs predicted to get
-
-Now we can get our metrics averaged over all 20 repeat, fold combos.
-
-```{r}
-collect_metrics(final_poly_res)
-```
-
-Let's get the predictions.
-
-```{r}
-assess_poly_res <- collect_predictions(final_poly_res)
-```
-
-```{r}
-assess_poly_res %>% 
-  ggplot(aes(x = mean_wait_i, y = .pred)) + 
-  geom_point(alpha = .15) +
-  geom_abline(color = "red") + 
-  coord_obs_pred() + 
-  ylab("Predicted")
-```
-
-Now, let's use `last_fit` to force a refit using the entire training set and then use that to make predictions on the test set. This is done in one step by passing in the workflow object and the split object used to create the original train-test split.
-
-```{r}
-last_poly_res <- last_fit(wait_i_poly_wflow, xy_q_in_split)
-last_poly_res
-```
-
-```{r assess_last_poly_plot}
-assess_last_poly_res <- collect_predictions(last_poly_res)
-
-assess_last_poly_res %>% 
-  ggplot(aes(x = mean_wait_i, y = .pred)) + 
-  geom_point(alpha = .15) +
-  geom_abline(color = "red") + 
-  coord_obs_pred() + 
-  ylab("Predicted")
-
-```
-
-We can get the rmse for the last fit model on the test data with `collect_metrics`.
-
-```{r}
-collect_metrics(last_poly_res)
-```
-
-
-
-
-
-
 ## Cubic spline models
 
 Cubic splines are another common metamodeling approach. They are flexible and adept at capturing non-linear relationships such as those found in queueing systems.
+
+```{r spline_cv_wf}
+wait_i_spline_mod <- linear_reg(mode = "regression") %>% 
+  set_engine(engine = "lm")
+
+wait_i_spline_mod_formula <- mean_wait_i ~ patients_per_clinic_block + 
+                         num_med_techs +
+                         num_rooms + 
+                         vitals_time_mean +
+                         exam_time_mean +
+                         exam_time_cv2 + 
+                         post_exam_time_mean + 
+                         off_util_staff + 
+                         off_util_room + 
+                         off_util_physician
+
+# For ns(), the default of deg_free = 2 corresponds to 1 inner knot for
+# the natural cubic spline
+wait_i_spline_recipe <- recipe(wait_i_spline_mod_formula, data = xy_q_in_train) %>% 
+  step_ns(patients_per_clinic_block, num_med_techs, num_rooms,
+          vitals_time_mean, exam_time_mean, exam_time_cv2, post_exam_time_mean,
+          off_util_staff, off_util_room, off_util_physician,
+          deg_free = 2)
+
+wait_i_spline_wflow <- 
+  workflow() %>% 
+  add_model(wait_i_spline_mod) %>% 
+  add_recipe(wait_i_spline_recipe)
+
+# Specify control options
+keep_pred <- control_resamples(save_pred = FALSE, save_workflow = FALSE)
+
+# Pipe our workflow through fit_resamples
+final_wait_i_spline_res <- 
+  wait_i_spline_wflow %>% 
+  fit_resamples(resamples = in_train_splits, control = keep_pred)
+
+collect_metrics(final_wait_i_spline_res)
+
+# Do last fit
+wait_i_last_spline_res <- last_fit(wait_i_spline_wflow, xy_q_in_split)
+
+collect_metrics(wait_i_last_spline_res)
+
+assess_wait_i_last_spline_res <- collect_predictions(wait_i_last_spline_res)
+
+assess_wait_i_last_spline_res %>% 
+  ggplot(aes(x = mean_wait_i, y = .pred)) + 
+  geom_point(alpha = .15) +
+  geom_abline(color = "red") + 
+  coord_obs_pred() + 
+  ylab("Predicted")
+
+
+```
 
 ## Linear transform version of wait_i model
 
