@@ -1045,11 +1045,11 @@ train_data <- analysis(xy_q_in_split)
 test_data <- assessment(xy_q_in_split)
 ```
 
-Now we can do the fit.
+Now we can do the last fit.
 
 ```{r}
 result <- parsnip_tps(wait_i_nls_mod, wait_i_nls_mod_formula, train_data, test_data,
-                        scenario = 'initial_wait', method = 'nls')
+                        scenario = 'initial_wait_last_fit', method = 'nls')
    
 rmse_metric_for_df <- list(.metric="rmse",
                             .estimator="standard",
@@ -1074,7 +1074,21 @@ tune:::collect_metrics.tune_results(wait_i_last_nls_res, summarize = FALSE)
 collect_metrics(wait_i_last_poly_res)
 ```
 
+Now let's repeat what we just did but using a functionalized version.
 
+```{r}
+wait_i_kfold_res_fun <- parsnip_fit_resamples(wait_i_nls_mod, wait_i_nls_mod_formula, in_train_splits, kfold_number, kfold_repeats)
+
+tune:::collect_metrics.tune_results(wait_i_kfold_res_fun, summarize = TRUE)
+
+wait_i_last_res_fun <- parsnip_last_fit(wait_i_nls_mod, wait_i_nls_mod_formula, xy_q_in_split)
+
+tune:::collect_metrics.tune_results(wait_i_last_res_fun, summarize = FALSE)
+```
+
+```{r}
+
+```
 
 
 
