@@ -9,6 +9,7 @@ library(ggplot2)
 library(dplyr)
 library(tidymodels)
 library(MLmetrics)
+library(stringr)
 ```
 
 ## Background on the simulation study
@@ -364,12 +365,14 @@ assess_wait_i_last_spline_res %>%
 
 
 
-## Nonlinear queueing inspired models for initital wait
+## Nonlinear queueing inspired model for initital wait
+
+Finally, let's look at the queueing based nonlinear model.
 
 See slides 13-16 in the INFORMS 2006 presentation for the details behind the
 DM1 based model.
 
-In our dataset, you'll find a queueing inspired featured named `mean_wait_i_dm1`
+In our dataset, you'll find a queueing related featured named `mean_wait_i_dm1`
 which corresponds to a DM1 based approximation for the initial mean wait time.
 Of course our model will include additional terms as well, but it's interesting
 to see how just this single approximation does.
@@ -393,8 +396,6 @@ Let's fit a multiplicative power model that includes terms that attempt to corre
 -   there are network effects and the number of rooms will also affect wait time via its impact on med tech utilization (e.g. increased med tech availability due to lack of room availability to begin next exam)
 -   the service time is not exponential but is approximately hypererlang since staff could be doing vitals, post-care or room turnover
 
-## Model fitting with nls()
-
 The proposed model is
 
 $$
@@ -411,535 +412,13 @@ where
 You can think of the $R, C, S$ terms along with the power parameters as being adjustments to the raw DM1 based term, $W_{D}$. Clearly, this is a nonlinear model and we will
 estimate $b_1, ..., b_5$ using R's `nls()` function.
 
-We will start with fitting models on the entire dataset. Then we will do standard train-test split and k-fold cross validation to assess model accuracy.
-
-```{r nls_wait_i}
-init_nls_wait_i <- c(b1=.1, b2=-0.6, b3=2, b4=0.5, b5=2)
-
-nls_wait_i <- nls(mean_wait_i ~ b1 * (num_med_techs ^ b2) * (mean_wait_i_dm1 ^ b3) * (staff_eff_svc_time_cv2 ^ b5) * (num_rooms ^ b4),
-                 data=xy_q, start=init_nls_wait_i)
-
-summary(nls_wait_i)
-```
-
-The fitted model is
-
-$$
-W_I = 0.0163 \frac{W_{D}^{1.615}R^{0.515}C^{0.3710}}{S^{0.3501}}
-$$
-
-where
-
--   $W_{D}$ is the mean wait in the approximating $D/M/1$ queue
--   $R$ is the number of exam rooms
--   $C$ is the coefficient of variation squared of an approximate effective service time distribution for staff (hyper-erlang)
--   $S$ is the number medical technician staff
-
-One can view the $R$, $C$, and $S$ terms as adjustments to the $D/M/1$ based approximation that account for the assumptions of that queueing system that we have violated
-
--   that it's a standalone queue (not part of a network),
--   that the service time is exponential
--   that there is a single server.
-
-See Slide 27 in the 2006 INFORMS presentation.
-
-Assess overall fit via an actual vs predicted plot.
-
-```{r nls_wait_i_plot}
-nls_wait_i_fitted <- predict(nls_wait_i, data=xy_q)
-nls_wait_i_df <- data.frame(mean_wait_i=xy_q$mean_wait_i, nls_wait_i_fitted)
-ggplot(nls_wait_i_df) + geom_point(aes(x=mean_wait_i, y=nls_wait_i_fitted)) + geom_abline(intercept=0, slope=1)
-ggsave('./initial_wait_fitted_vs_actual.png')
-```
-
-Very nice fit and only five parameters that have physical underpinnings that make sense in the context of queueing models.
-
-```{r rmse_nls_wait_i}
-rmse_vec(nls_wait_i_df$mean_wait_i, nls_wait_i_df$nls_wait_i_fitted)
-```
-
-### Wait for room
-
-Our approach is similar to what was done for the initial wait. The details of the service time cv2 approximation is different because it's based on the time the exam room is in use which includes the wait time for the physician. See Slide 21.
-
-Again, start with seeing how the raw DM1 approximation looks.
-
-```{r wait_r_dm1}
-ggplot(xy_q) + geom_point(aes(x=mean_wait_r, y=mean_wait_r_dm1)) + geom_abline(intercept=0, slope=1)
-```
-
-Clearly it captures quite a bit of the mean wait time behavior over the scenarios.
-
-```{r nls_wait_r}
-init_nls_wait_r <- c(b1=1.0, b2=1.0, b3=.5, b4=-0.5)
-
-nls_wait_r <- nls(mean_wait_r ~ b1 * (mean_wait_r_dm1 ^ b2) * (num_rooms ^ b3) * (exam_eff_svc_time_cv2 ^ b4),
-                 data=xy_q, start=init_nls_wait_r)
-
-summary(nls_wait_r)
-```
-
-```{r nls_wait_r_plot}
-nls_wait_r_fitted <- predict(nls_wait_r, data=xy_q_wait_r)
-nls_wait_r_df <- data.frame(mean_wait_r=xy_q$mean_wait_r, nls_wait_r_fitted)
-ggplot(nls_wait_r_df) + geom_point(aes(x=mean_wait_r, y=nls_wait_r_fitted)) + geom_abline(intercept=0, slope=1)
-ggsave('./wait_room_fitted_vs_actual.png')
-```
-
-Again, nice fit.
-
-### Wait for physician
-
-At this point, the patient is in exam room and is waiting for the physician.
-
-Again, check raw DM1 approximation.
-
-```{r}
-ggplot(xy_q) + geom_point(aes(x=mean_wait_p, y=mean_wait_p_dm1)) + geom_abline(intercept=0, slope=1)
-```
-
-Clearly, DM1 by itself is not capturing the mean wait time behavior. Since we have a network of care stages in which patient needs a room before requesting the physician, it's not unlikely that the number of rooms as well as it's planned utilization might play a role. In addition, we need to account for the non-exponential nature of the exam time distribution through the cv2 for the exam itself.
-
-```{r nls_wait_p}
-init_nls_wait_p <- c(b1=1.0, b2=1.0, b3=0.5, b4=2, b5=2, b6=1, b7=1)
-
-nls_wait_p <- nls(mean_wait_p ~ b1 * (mean_wait_p_dm1 ^ b2) * (exam_time_cv2 ^ b3) * (num_rooms ^ b4) * (num_med_techs ^ b5) * (off_util_staff ^ b6) * (off_util_room^b7),
-                 data=xy_q, start=init_nls_wait_p)
-
-summary(nls_wait_p)
-```
-
-```{r nls_wait_p_plot}
-nls_wait_p_fitted <- predict(nls_wait_p, data=xy_q_wait_p)
-nls_wait_p_df <- data.frame(mean_wait_p=xy_q$mean_wait_p, nls_wait_p_fitted)
-ggplot(nls_wait_p_df) + geom_point(aes(x=mean_wait_p, y=nls_wait_p_fitted)) + geom_abline(intercept=0, slope=1)
-ggsave('./wait_physician_fitted_vs_actual.png')
-```
-
-Nice fit. Not surprisingly, there's a spike corresponding to small overpredictions when the mean wait time was zero (literally no one waited at all for a physician).
-
-### Mean time in clinic
-
-The total time spent in the clinic is a the summation of time spent in the various care and waiting stages. For the total wait from the time after vitals are taken until the physician starts the exam is the sum of the two wait times we just modeled - wait for a room and then wait for the physician. Are these two wait times correlated? It doesn't really look like it from the plot below.
-
-```{r wait_correlation}
-ggplot(xy_q) + geom_point(aes(x=mean_wait_r, y=mean_wait_p)) + geom_abline(intercept=0, slope=1)
-```
-
-```{r compute_atic}
-atic <- nls_wait_i_fitted + xy_q$vitals_time_mean + nls_wait_r_fitted + nls_wait_p_fitted + xy_q$exam_time_mean + xy_q$post_exam_time_mean
-
-ggplot(data.frame(atic, mean_time_in_system=xy_q$mean_time_in_system)) + geom_point(aes(x=mean_time_in_system, y=atic)) + geom_abline(intercept=0, slope=1)
-```
-
-Fit looks pretty good.
-
-### Summary of queueing based model fitting
-
-Overall we have developed parsimonious non-linear models driven by the queueing physics of the underlying system. Now, let's try more traditional approaches using polynomial regression and cubic splines based on just the base scenario input variables.
-
-## Polynomial regression modeling
-
-Now we'll build order 2, polynomial regresson models as these are commonly accepted for simulation metamodeling and they tend to fit pretty well for queueing type systems as we saw in the patient flow example.
-
-### Data prep for poly modeling
-
-For poly and spline models need to drop the terms that don't vary in the experimental design - prep, post, tat
-
-```{r poly_prep}
-cols_for_poly_no_util <- c('patients_per_clinic_block', 'num_med_techs', 'num_rooms',
-                   'vitals_time_mean', 'exam_time_mean', 'exam_time_cv2', 'post_exam_time_mean')
-
-cols_for_poly_util <- c(cols_for_poly_no_util, c('off_util_staff', 'off_util_room', 'off_util_physician'))
-
-y_cols <- c('mean_wait_i', 'mean_wait_r', 'mean_wait_p',
-                   'mean_time_in_system')
-
-cols_for_poly_no_util <- c(cols_for_poly_no_util, y_cols)
-cols_for_poly_util <- c(cols_for_poly_util, y_cols)
-
-poly_xy_util_df <- xy_q %>% 
-  select(all_of(cols_for_poly_util))
-
-poly_xy_no_util_df <- xy_q %>% 
-  select(all_of(cols_for_poly_no_util))
-```
-
-### Poly models for initial wait
-
-For the first model, only the base inputs were used in a poly-2 model.
-
-```{r poly_noutil_wait_i}
-
-
-poly_noutil_wait_i <- lm(mean_wait_i ~ patients_per_clinic_block + I(patients_per_clinic_block^2) +
-                         num_med_techs + I(num_med_techs^2) +
-                         num_rooms + I(num_rooms^2) +
-                         vitals_time_mean + I(vitals_time_mean^2) +
-                         exam_time_mean + I(exam_time_mean^2) +
-                         exam_time_cv2 + I(exam_time_cv2^2) +
-                         post_exam_time_mean + I(post_exam_time_mean^2),
-                 data=poly_xy_no_util_df)
-
-summary(poly_noutil_wait_i)
-```
-
-```{r noutil_wait_i_plot}
-poly_noutil_wait_i_fitted <- predict(poly_noutil_wait_i, data=poly_xy_no_util_df)
-poly_noutil_wait_i_plot_df <- data.frame(mean_wait_i=poly_xy_no_util_df$mean_wait_i, poly_noutil_wait_i_fitted)
-ggplot(poly_noutil_wait_i_plot_df) + geom_point(aes(x=mean_wait_i, y=poly_noutil_wait_i_fitted)) + geom_abline(intercept=0, slope=1)
-ggsave('./poly_wait_initial_fitted_vs_actual.png')
-```
-
-Clearly, the model does not fit very well.
-
-Now let's add the three utilization related terms into the poly-2 model.
-
-```{r poly_util_wait_i}
-
-
-poly_util_wait_i <- lm(mean_wait_i ~ patients_per_clinic_block + I(patients_per_clinic_block^2) +
-                         num_med_techs + I(num_med_techs^2) +
-                         num_rooms + I(num_rooms^2) +
-                         vitals_time_mean + I(vitals_time_mean^2) +
-                         exam_time_mean + I(exam_time_mean^2) +
-                         exam_time_cv2 + I(exam_time_cv2^2) +
-                         post_exam_time_mean + I(post_exam_time_mean^2) +
-                         off_util_staff + I(off_util_staff^2) +
-                         off_util_room + I(off_util_room^2) +
-                         off_util_physician + I(off_util_physician^2),
-                 data=poly_xy_util_df)
-
-summary(poly_util_wait_i)
-```
-
-```{r wait_i_plot}
-poly_util_wait_i_fitted <- predict(poly_util_wait_i, data=poly_xy_util_df)
-poly_util_wait_i_plot_df <- data.frame(mean_wait_i=poly_xy_util_df$mean_wait_i, poly_util_wait_i_fitted)
-ggplot(poly_util_wait_i_plot_df) + geom_point(aes(x=mean_wait_i, y=poly_util_wait_i_fitted)) + geom_abline(intercept=0, slope=1)
-ggsave('./poly_util_wait_initial_fitted_vs_actual.png')
-```
-
-The utilization terms certainly help. Of course we have a model with 20 terms that are difficult to interpret.
-
-### Poly model for wait for room
-
-We'll just consider the model that includes the utilization terms.
-
-```{r poly_util_wait_r}
-
-
-poly_util_wait_r <- lm(mean_wait_r ~ patients_per_clinic_block + I(patients_per_clinic_block^2) +
-                         num_med_techs + I(num_med_techs^2) +
-                         num_rooms + I(num_rooms^2) +
-                         vitals_time_mean + I(vitals_time_mean^2) +
-                         exam_time_mean + I(exam_time_mean^2) +
-                         exam_time_cv2 + I(exam_time_cv2^2) +
-                         post_exam_time_mean + I(post_exam_time_mean^2) +
-                         off_util_staff + I(off_util_staff^2) +
-                         off_util_room + I(off_util_room^2) +
-                         off_util_physician + I(off_util_physician^2),
-                 data=poly_xy_util_df)
-
-summary(poly_util_wait_r)
-```
-
-```{r wait_r_plot}
-poly_util_wait_r_fitted <- predict(poly_util_wait_r, data=poly_xy_util_df)
-poly_util_wait_r_plot_df <- data.frame(mean_wait_r=poly_xy_util_df$mean_wait_r, poly_util_wait_r_fitted)
-ggplot(poly_util_wait_r_plot_df) + geom_point(aes(x=mean_wait_r, y=poly_util_wait_r_fitted)) + geom_abline(intercept=0, slope=1)
-ggsave('./poly_util_room_initial_fitted_vs_actual.png')
-```
-
-### Poly model for mean time in clinic
-
-```{r poly_util_time_in_system}
-
-
-poly_util_time_in_system <- lm(mean_time_in_system ~ patients_per_clinic_block + I(patients_per_clinic_block^2) +
-                         num_med_techs + I(num_med_techs^2) +
-                         num_rooms + I(num_rooms^2) +
-                         vitals_time_mean + I(vitals_time_mean^2) +
-                         exam_time_mean + I(exam_time_mean^2) +
-                         exam_time_cv2 + I(exam_time_cv2^2) +
-                         post_exam_time_mean + I(post_exam_time_mean^2) +
-                         off_util_staff + I(off_util_staff^2) +
-                         off_util_room + I(off_util_room^2) +
-                         off_util_physician + I(off_util_physician^2),
-                 data=poly_xy_util_df)
-
-summary(poly_util_time_in_system)
-```
-
-```{r atic_plot}
-poly_util_atic_fitted <- predict(poly_util_time_in_system, data=poly_xy_util_df)
-poly_util_atic_plot_df <- data.frame(mean_time_in_system=poly_xy_util_df$mean_time_in_system, poly_util_atic_fitted)
-ggplot(poly_util_atic_plot_df) + geom_point(aes(x=mean_time_in_system, y=poly_util_atic_fitted)) + geom_abline(intercept=0, slope=1)
-ggsave('./poly_util_atic_initial_fitted_vs_actual.png')
-```
-
-### Revisit using orthogonal polynomials
-
-I just wanted to see if using orthogonal polynomials makes a difference. I don't expect it to.
-
--   https://stats.stackexchange.com/questions/253123/what-are-multivariate-orthogonal-polynomials-as-computed-in-r
--   https://stats.stackexchange.com/questions/72626/how-to-include-a-linear-and-quadratic-term-when-also-including-interaction-with
-
-```{r orthopoly_util_wait_i}
-
-
-orthopoly_util_wait_i <- lm(mean_wait_i ~ poly(patients_per_clinic_block, 2) +
-                         poly(num_med_techs, 2) +
-                         poly(num_rooms, 2) +
-                         poly(vitals_time_mean, 2) +
-                         poly(exam_time_mean, 2) +
-                         poly(exam_time_cv2, 2) +
-                         poly(post_exam_time_mean, 2) +
-                         poly(off_util_staff, 2) +
-                         poly(off_util_room, 2) +
-                         poly(off_util_physician, 2),
-                 data=poly_xy_util_df)
-
-summary(orthopoly_util_wait_i)
-```
-
-```{r orthopoly_plot}
-orthopoly_util_wait_i_fitted <- predict(orthopoly_util_wait_i, data=poly_xy_util_df)
-orthopoly_util_wait_i_plot_df <- data.frame(mean_wait_i=poly_xy_util_df$mean_wait_i, orthopoly_util_wait_i_fitted)
-ggplot(orthopoly_util_wait_i_plot_df) + geom_point(aes(x=mean_wait_i, y=orthopoly_util_wait_i_fitted)) + geom_abline(intercept=0, slope=1)
-ggsave('./orthopoly_util_wait_initial_fitted_vs_actual.png')
-```
-
-Using orthogonal polynomials doesn't appear to buy us much in terms of coefficient interpretation or model fit.
-
-## Model accuracy assessment using k-crossfold validation
-
-Everything above was just fitting models to the entire set of scenarios (n=4860). Now we'll use k-crossfold validation to get a better sense of the relative accuracy of the queueing based models versus the other models.
-
-### Creation of an "out of design" holdout set
-
-In addition to assessing how accurate the various models are within the confines of the experimental design, I thought it would also be interesting to assess their relative peformance in extrapolation beyond the experimental design. So, I decided to treat the highest arrival rate level as the "out of design" holdout set. These scenarios correspond to every 5th row in the the `xy_q` dataframe.
-
-Create sequence of row numbers to include in the out of design set and the in design set.
-
-```{r ood_holdout}
-
-ood_rows <- seq(5, 4860, 5)
-design_rows <- setdiff(seq(1, 4860,1), ood_rows)
-```
-
-Now subset the main dataframe.
-
-```{r subset_xy_q}
-
-xy_q_out <- xy_q[ood_rows, ]
-xy_q_in <- xy_q[design_rows, ]
-
-```
-
-
-
-#### Initial patient wait time model - poly
-
-For any modeling interface included in the `parsnip` package, we can do the whole modeling workflow using tidymodels tools. So, let's do polynomial regression first.
-
-```{r wait_i_poly_mod}
-# Initialize parsnip model object with default engine (lm in this case) and mode
-# wait_i_poly_mod <- linear_reg()
-
-# Here's just being explicit - these are the default values so no really needed
-wait_i_poly_mod <- linear_reg(mode = "regression", engine = "lm") 
-
-```
-
-We can also do the above like this and use `set_engine` as a place to set engine specific input arguments.
-
-```{r wait_i_poly_mod2}
-wait_i_poly_mod <- linear_reg(mode = "regression") %>% 
-  set_engine(engine = "lm")
-```
-
-Now let's fit a polynomial regression model using the training data. Start by storing the formula in a variable for reusability.
-
-```{r wait_i_poly_mod_formula}
-wait_i_poly_mod_formula <- mean_wait_i ~ patients_per_clinic_block + I(patients_per_clinic_block^2) +
-                         num_med_techs + I(num_med_techs^2) +
-                         num_rooms + I(num_rooms^2) +
-                         vitals_time_mean + I(vitals_time_mean^2) +
-                         exam_time_mean + I(exam_time_mean^2) +
-                         exam_time_cv2 + I(exam_time_cv2^2) +
-                         post_exam_time_mean + I(post_exam_time_mean^2) +
-                         off_util_staff + I(off_util_staff^2) +
-                         off_util_room + I(off_util_room^2) +
-                         off_util_physician + I(off_util_physician^2)
-```
-
-```{r wait_i_poly_mod_fit}
-wait_i_poly_mod_fit <- 
-  wait_i_poly_mod %>% 
-  fit(wait_i_poly_mod_formula, data = xy_q_in_train)
-
-wait_i_poly_mod_fit
-```
-
-To get predictions, we can use this fitted model object. Let's test this out with just a few rows from the test data.
-
-```{r try_predict}
-xy_q_in_test_small <- xy_q_in_test %>% slice(1:5)
-predict(wait_i_poly_mod_fit, new_data = xy_q_in_test_small)
-```
-
-Easy to combine actuals with predicted.
-
-```{r poly_predict_plot}
-xy_q_in_test %>% 
-  select(mean_wait_i) %>% 
-  bind_cols(predict(wait_i_poly_mod_fit, new_data = xy_q_in_test)) %>% 
-  ggplot() + geom_point(aes(x=mean_wait_i, y=.pred))
-```
-
-Here's how we can also use tidymodels workflow objects. These are like pipelines in sklearn and make it easy to combine preprocessing and model fitting into a single entity upon which we can call `fit`. Helps prevent knowledge leakage into test data.
-
-```{r simple_wflow_1}
-wait_i_poly_wflow <- 
-  workflow() %>% 
-  add_model(wait_i_poly_mod)
-
-wait_i_poly_wflow
-```
-
-In this case we don't really have any preprocessing but can treat the formula specification step as a preprocessing step. More elaborate preprocessing can be encapsulated in a "recipe" with the recipes package.
-
-```{r simple_wflow_2}
-wait_i_poly_wflow <- 
-  wait_i_poly_wflow %>% 
-  add_formula(wait_i_poly_mod_formula)
-
-wait_i_poly_wflow
-```
-
-```{r fit_wflow}
-wait_i_poly_mod_fit <- fit(wait_i_poly_wflow, data = xy_q_in_train)
-wait_i_poly_mod_fit
-```
-
-Since in this first example, we did **not** do resampling, the fit object `wait_i_poly_mod_fit` should be the same as we get with the `last_fit` method.
-
-```{r poly_last_fit}
-
-final_poly_res <- last_fit(wait_i_poly_wflow, xy_q_in_split)
-final_poly_res
-
-```
-
-You can go backwards from a results object to the workflow that produced it.
-
-```{r}
-extract_workflow(final_poly_res)
-```
-
-You can pull out metrics and predictions like this. These predictions should be on test. Yep, there are 972 rows in `xy_q_in_test`.
-
-```{r metrics_pred}
-collect_metrics(final_poly_res)
-collect_predictions(final_poly_res) 
-```
-
-Since there are no tuning parameters in this model, doing k-crossfold should still end up giving us the same model (and thus performance on test).
-
-Now that we know the basics of model fitting and workflows, let's combine this with resampling.
-
-### k-fold cross validation on the training data
-
-
-
-Instead of the `analysis` and `assessment` "convenience" functions, we can also access the split data like this.
-
-```{r access_split_data_2}
-head(as.data.frame(first_resample))
-# as.data.frame(first_resample, data="analysis")
-```
-
-By default, the analysis data is returned but you can get the assessment data like this:
-
-```{r access_split_data_3}
-head(as.data.frame(first_resample, data = "assessment"))
-
-```
-
-Now, we need to use our resampling scheme (i.e. `in_train_splits`) within our modeling workflow. The basic approach is to call `fit_resamples()` instead of `fit()` and pass in the split object instead of a dataframe. See https://www.tmwr.org/resampling.html#resampling-performance.
-
-The `fit_resamples()` function can also accept a `control` object in which we can specify things like wanting to save the individual assessment predictions for each fold (and repeat).
-
-```{r poly_cv}
-# Specify control options
-keep_pred <- control_resamples(save_pred = TRUE)
-
-# Pipe our workflow through fit_resamples
-wait_i_final_poly_res <- 
-  wait_i_poly_wflow %>% 
-  fit_resamples(resamples = in_train_splits, control = keep_pred)
-
-wait_i_final_poly_res
-```
-
-```{r}
-final_poly_res[1,".metrics"][[1]]
-```
-
-Notice we get metrics and predictions (if we want - see commented out lines) for each repeat, fold combo. We also get some notes it appears. Within each repeat, each observation gets held out once and the error metrics are based on those hold out samples.
-
-Now we can get our metrics averaged over all 50 repeat, fold combos.
-
-```{r}
-collect_metrics(final_poly_res)
-```
-
-Let's get the predictions.
-
-```{r}
-assess_poly_res <- collect_predictions(final_poly_res)
-```
-
-```{r}
-assess_poly_res %>% 
-  ggplot(aes(x = mean_wait_i, y = .pred)) + 
-  geom_point(alpha = .15) +
-  geom_abline(color = "red") + 
-  coord_obs_pred() + 
-  ylab("Predicted")
-```
-
-Now, let's use `last_fit` to force a refit using the entire training set and then use that to make predictions on the test set. This is done in one step by passing in the workflow object and the split object used to create the original train-test split.
-
-```{r}
-wait_i_last_poly_res <- last_fit(wait_i_poly_wflow, xy_q_in_split)
-wait_i_last_poly_res
-```
-
-```{r assess_last_poly_plot}
-assess_wait_i_last_poly_res <- collect_predictions(wait_i_last_poly_res)
-
-assess_wait_i_last_poly_res %>% 
-  ggplot(aes(x = mean_wait_i, y = .pred)) + 
-  geom_point(alpha = .15) +
-  geom_abline(color = "red") + 
-  coord_obs_pred() + 
-  ylab("Predicted")
-
-```
-
-We can get the rmse for the last fit model on the test data with `collect_metrics`.
-
-```{r}
-collect_metrics(wait_i_last_poly_res)
-```
-
-#### Initial patient wait time model - nls
-
-Now that we know the basics of using the tidymodels tools, let's try to use them to build and assess a model for initial patient wait time using our nonlinear queueing inspired model. The complicating factor is that `nls` is **not** a model engine currently supported by parsnip. So, we either need to create our own parsnip model (which is definitely doable and there is documentation) or to do a bunch of the modeling and assessing steps manually. Hmmm....
-
-#### Developing a parsnip model that uses nls()
+Unfortunately, as mentioned earlier, I had to write some custom functions to
+facilitate fitting a model for each split in the repeated k-crossfolds step. In
+addition, I had to create a custom `parsnip` model since `nls` isn't 
+a supported engine currently. So, there's a decent bit of code here to do
+all this. 
+
+### Developing a parsnip model that uses nls()
 
 https://www.tidymodels.org/learn/develop/models/
 
@@ -1066,457 +545,148 @@ set_pred(
 )
 ```
 
-Ok, let's see if we can get to work.
+Now we have a custom model type named "nonlinear_reg" that we can use. While
+I was able to successfully use my custom "nonlinear_reg" model to fit a model
+and assess its predictive accuracy, the `fit_resamples()` function didn't
+like the fact that the model was nonlinear and refused to fit it for each of
+the data splits (even though I could manually fit it for any split). So,
+that's where I needed to write custom functions that looped through splits
+and did the model fitting.
 
-```{r}
+### Fit model on entire training set
+
+Just for fun, here's a single fit on the entire training dataset.
+
+
+```{r nls_wait_i}
+# Nonlinear models need starting guesses for the params
 init_nls_wait_i <- c(b1=.1, b2=-0.6, b3=2, b4=0.5, b5=2)
-nonlinear_reg() %>% set_engine(engine = "nls", start = init_nls_wait_i) %>% 
-  translate()
+
+# Fit the model
+nls_wait_i <- nls(mean_wait_i ~ b1 * (num_med_techs ^ b2) * (mean_wait_i_dm1 ^ b3) * (staff_eff_svc_time_cv2 ^ b5) * (num_rooms ^ b4),
+                 data=xy_q, start=init_nls_wait_i)
+
+# Check out the model terms
+summary(nls_wait_i)
 ```
 
-Initialize a model object. **IMPORTANT** Notice how the `set_engine` function not only sets the engine to "nls" it also allows us to pass engine specific optional input arguments such as the starting parameter values for nls().
+The fitted model is
 
-```{r wait_i_nls_init}
-# Initialize parsnip model object with default engine (lm in this case) and mode
-# wait_i_poly_mod <- linear_reg()
+$$
+W_I = 0.0163 \frac{W_{D}^{1.615}R^{0.515}C^{0.3710}}{S^{0.3501}}
+$$
 
-init_nls_wait_i <- c(b1=.1, b2=-0.6, b3=2, b4=0.5, b5=2)
-wait_i_nls_mod <- nonlinear_reg() %>% set_engine(engine = "nls", start = init_nls_wait_i)
-translate(wait_i_nls_mod)
+where
+
+-   $W_{D}$ is the mean wait in the approximating $D/M/1$ queue
+-   $R$ is the number of exam rooms
+-   $C$ is the coefficient of variation squared of an approximate effective service time distribution for staff (hyper-erlang)
+-   $S$ is the number medical technician staff
+
+One can view the $R$, $C$, and $S$ terms as adjustments to the $D/M/1$ based approximation that account for the assumptions of that queueing system that we have violated
+
+-   that it's a standalone queue (not part of a network),
+-   that the service time is exponential
+-   that there is a single server.
+
+See Slide 27 in the 2006 INFORMS presentation.
+
+Assess overall fit via an actual vs predicted plot.
+
+```{r nls_wait_i_plot}
+nls_wait_i_fitted <- predict(nls_wait_i, data=xy_q)
+nls_wait_i_df <- data.frame(mean_wait_i=xy_q$mean_wait_i, nls_wait_i_fitted)
+ggplot(nls_wait_i_df) + geom_point(aes(x=mean_wait_i, y=nls_wait_i_fitted)) + geom_abline(intercept=0, slope=1)
+ggsave('./initial_wait_fitted_vs_actual.png')
 ```
 
-```{r wait_i_nls_mod_formula}
-wait_i_nls_mod_formula <- mean_wait_i ~ b1 * (num_med_techs ^ b2) * (mean_wait_i_dm1 ^ b3) *(num_rooms ^ b4) * (staff_eff_svc_time_cv2 ^ b5)
+Very nice fit and only five parameters that have physical underpinnings that make sense in the context of queueing models.
+
+```{r rmse_nls_wait_i}
+rmse_vec(nls_wait_i_df$mean_wait_i, nls_wait_i_df$nls_wait_i_fitted)
 ```
 
-```{r wait_i_poly_mod_fit}
-wait_i_nls_mod_fit <- 
-  wait_i_nls_mod %>% 
-  fit(formula = wait_i_nls_mod_formula, data = xy_q_in_train)
+Clearly the model is very promising. Let's run it through the cross-validation
+machinery I wrote so that we treat the nonlinear model just like the poly
+and spline models.
 
-wait_i_nls_mod_fit
-```
+### Fit queueing based nls model and use cross-validation
 
-Now let's try to use the fitted model to do predictions.
+In order to call the functions I wrote, I need the source the R script in
+which they live.
 
-```{r try_predict_nls}
-xy_q_in_test_small <- xy_q_in_test %>% slice(1:5)
-predict(wait_i_nls_mod_fit, new_data = xy_q_in_test_small)
-```
-
-```{r nlspredict_plot}
-xy_q_in_test %>% 
-  select(mean_wait_i) %>% 
-  bind_cols(predict(wait_i_nls_mod_fit, new_data = xy_q_in_test)) %>% 
-  ggplot() + geom_point(aes(x=mean_wait_i, y=.pred)) + geom_abline(intercept = 0, slope = 1)
-```
-
-Now let's repeat the above but with one of the split objects.
-
-```{r get_fold}
-first_resample <- in_train_splits$splits[[1]]
-head(analysis(first_resample))
-head(assessment(first_resample))
-```
-
-```{r wait_i_poly_mod_fit_fold1}
-wait_i_nls_mod_fit_fold1 <- 
-  wait_i_nls_mod %>% 
-  fit(formula = wait_i_nls_mod_formula, data = analysis(first_resample))
-
-wait_i_nls_mod_fit_fold1
-
-assessment(first_resample) %>% 
-  select(mean_wait_i) %>% 
-  bind_cols(predict(wait_i_nls_mod_fit_fold1, new_data = assessment(first_resample))) %>% 
-  ggplot() + geom_point(aes(x=mean_wait_i, y=.pred)) + geom_abline(intercept = 0, slope = 1)
-```
-
-#### Use nls parsnip with cv
-
-> Here's where the pain starts. From above, clearly we have created our own parsnip model object based on the nls() function. It works on the whole training set and it works on some specific fold of the cv process. But..., as we'll see below, instead of calling fit(), we need to call fit_resample() and strangely enough the implementation of fit_resample() in the tune package is not consistent with that of fit() when it comes to processing the formula object. The fit_resample() function does not like nonlinear functions (I think it's actually the recipes package) nor does it even like formula objects that contain things like log(x). The error message seems to indicate that we need to use the *step functions* in the recipes package to implement all but simple linear formula objects.
-
-Start by creating a new workflow for this model. Here's what the model object looks like.
-
-```{r}
-wait_i_nls_mod
-```
-
-If we try to do this with no recipe, but just use `add_formula` from the workflows package, here's what happens. We get an "invalid power in formula" error.
-
-```{r}
-wait_i_nls_wflow <- 
-  workflow() %>% 
-  add_model(wait_i_nls_mod) %>% 
-  add_formula(wait_i_nls_mod_formula)
-
-# Pipe our workflow through fit_resamples
-final_wait_i_nls_res <- 
-  wait_i_nls_wflow %>% 
-  fit_resamples(resamples = in_train_splits, control = keep_pred)
-
-wait_i_nls_wflow
-```
-
-The following should work but does not. The errors seem to suggest a formula processing issue. The `fit` function is part of parsnips but `fit_resamples` is in the tune package. The following [SO post](https://stackoverflow.com/questions/60595620/fit-resamples-with-ranger-package-fails) talks about a similar error and maybe this solution (use recipe instead of formula) will work. However, as we see, the recipes package is unhappy too. It views the nonlinear function as an "in-line function" and says to "use steps to define baking actions". The actual `inline_check()` function is here: https://github.com/tidymodels/recipes/blob/main/R/recipe.R
-
-```{r nls_cv_wf}
-wait_i_nls_wflow_rec <- 
-  workflow() %>% 
-  add_model(wait_i_nls_mod) %>% 
-  add_recipe(recipe(wait_i_nls_mod_formula, data = xy_q_in_train))
-
-# Specify control options
-keep_pred <- control_resamples(save_pred = TRUE, save_workflow = TRUE)
-
-# Pipe our workflow through fit_resamples
-final_wait_i_nls_res <- 
-  wait_i_nls_wflow_rec %>% 
-  fit_resamples(resamples = in_train_splits, control = keep_pred)
-
-final_wait_i_nls_res
-```
-
-> So, unless we can figure out how to use the recipes step functions to represent our nonlinear model, we are going to have to do a whole bunch of manual looping through the k-crossfold splits to fit models and assess their performance. After looking at the recipes package, I don't this is doable since the exponents in our nonlinear function are the parameters we are trying to estimate. Recipes is for premodel fitting transformations such as log transforms or splines. Note to self - can use it for creating the spline models as step functions exist for both B-splines and natural splines.
-
-Let's start creating our own machinery for this.
-
-```{r}
+```{r source_my_parsnip_resample}
 source('lib/parsnip_tps.R')
 ```
 
-```{r}
-first_resample <- in_train_splits$splits[[1]]
-train_data <- analysis(first_resample)
-test_data <- assessment(first_resample)
-results <- parsnip_tps(wait_i_nls_mod, wait_i_nls_mod_formula, train_data, test_data,
-                        scenario = 'just testing', method = 'nls') 
-```
 
-```{r}
-results$g_act_vs_pred
-```
+```{r nls_wf}
+# Create nonlinear_reg model object
+init_nls_wait_i <- c(b1=.1, b2=-0.6, b3=2, b4=0.5, b5=2)
+wait_i_nls_mod <- nonlinear_reg() %>% set_engine(engine = "nls", start = init_nls_wait_i)
 
-```{r}
-final_poly_res[1,".metrics"][[1]]
-```
+# Create the nonlinear formula
+wait_i_nls_mod_formula <- mean_wait_i ~ b1 * (num_med_techs ^ b2) * (mean_wait_i_dm1 ^ b3) *(num_rooms ^ b4) * (staff_eff_svc_time_cv2 ^ b5)
 
-We need to loop over the splits dataframe.
-
-```{r}
-# Container list for results
-listsize <- kfold_number * kfold_repeats
-# results_for_df <- vector("list", listsize)
-metrics_for_tibble <- vector("list", listsize)
-  
-#for( i in 1:2 ) {
-for( i in as.numeric(rownames(in_train_splits)) ) {  
-   repeatid <- in_train_splits[i, "id"]
-   foldid <- in_train_splits[i, "id2"]
-   
-   repeat_num <- as.numeric(str_extract(repeatid, "\\d+"))
-   fold_num <- as.numeric(str_extract(foldid, "\\d+"))
-   
-   resample <- in_train_splits$splits[[i]]
-   train_data <- analysis(resample)
-   test_data <- assessment(resample)
-   
-   result <- parsnip_tps(wait_i_nls_mod, wait_i_nls_mod_formula, train_data, test_data,
-                        scenario = 'initial_wait', method = 'nls')
-   
-   rmse_metric_for_df <- list(.metric="rmse",
-                              .estimator="standard",
-                              .estimate=result$rmse_test,
-                              .config="Preprocessor1_Model1")
-
-   mae_metric_for_df <- list(.metric="mae",
-                              .estimator="standard",
-                              .estimate=result$mae_test,
-                              .config="Preprocessor1_Model1")
-   
-   metrics_tibble <- as_tibble(rbind(unlist(rmse_metric_for_df), unlist(mae_metric_for_df)))
-   
-   metrics_tibble$.estimate <- as.numeric(metrics_tibble$.estimate)
-      
-   # metrics_for_df <- list(repeat_num=repeat_num,
-   #                        fold_num=fold_num,
-   #                        rmse_train=result$rmse_train,
-   #                        rmse_test=result$rmse_test,
-   #                        mae_train=result$mae_train,
-   #                        mae_test=result$mae_test)
-   
-   # results_for_df[[i]] <- metrics_for_df
-   metrics_for_tibble[[i]] <- metrics_tibble
-}
-
-#wait_i_kfold_results_df <- as.data.frame(do.call(rbind, results_for_df))
-# https://stackoverflow.com/questions/59928743/converting-a-list-of-lists-to-a-dataframe-in-r-the-tidyverse-way
-# wait_i_kfold_results_df <- results_for_df %>%
-#   map(as_tibble) %>%
-#   reduce(bind_rows)
-
-wait_i_kfold_res <- as_tibble(bind_cols(in_train_splits, tibble(.metrics=metrics_for_tibble)))
+# Call my custom function to fit the models for each split
+wait_i_kfold_res <- parsnip_fit_resamples(wait_i_nls_mod, wait_i_nls_mod_formula,
+                                          in_train_splits, kfold_number, kfold_repeats)
 
 ```
 
-ahhh, instead of trying to coerce the class of my tibble to whatever `collect_metrics` wants, let's just call the specific function flavor directly. Note the ::: since this function isn't exported.
+Now let's look at the metrics averaged over the 50 splits (10 repeats x 5 folds).
+Notice that there's a small standard error on the metrics indicating that 
+there's not a lot of variability between splits. This is good.
 
-```{r}
-tune:::collect_metrics.tune_results(wait_i_kfold_res, summarize = FALSE)
-```
+Notice also that the RMSE value for this nonlinear model is better than both
+the spline and poly RMSE values.
 
-Averaging over them can then be done like this.
-
-```{r}
+```{r collect_nls_metrics}
 tune:::collect_metrics.tune_results(wait_i_kfold_res, summarize = TRUE)
 ```
 
-However, this is NOT the same as doing a `last_fit` on the entire training data and assessing on the test data. To do that, we need to consider the initial split.
+Now we'll refit one last model using the entire training set and assess its
+performance on the in design test data.
 
-```{r}
-
-train_data <- analysis(xy_q_in_split)
-test_data <- assessment(xy_q_in_split)
-```
-
-Now we can do the last fit.
-
-```{r}
-result <- parsnip_tps(wait_i_nls_mod, wait_i_nls_mod_formula, train_data, test_data,
-                        scenario = 'initial_wait_last_fit', method = 'nls')
-   
-rmse_metric_for_df <- list(.metric="rmse",
-                            .estimator="standard",
-                            .estimate=result$rmse_test,
-                            .config="Preprocessor1_Model1")
-
-mae_metric_for_df <- list(.metric="mae",
-                            .estimator="standard",
-                            .estimate=result$mae_test,
-                            .config="Preprocessor1_Model1")
- 
-metrics_tibble <- as_tibble(rbind(unlist(rmse_metric_for_df), unlist(mae_metric_for_df)))
- 
-metrics_tibble$.estimate <- as.numeric(metrics_tibble$.estimate)
- 
-wait_i_last_nls_res <- as_tibble(bind_cols(xy_q_in_split$id, tibble(.metrics=metrics_tibble)))
-
-tune:::collect_metrics.tune_results(wait_i_last_nls_res, summarize = FALSE)
-```
-
-```{r}
-collect_metrics(wait_i_last_poly_res)
-```
-
-Now let's repeat what we just did but using a functionalized version.
-
-```{r}
-wait_i_kfold_res_fun <- parsnip_fit_resamples(wait_i_nls_mod, wait_i_nls_mod_formula, in_train_splits, kfold_number, kfold_repeats)
-
-tune:::collect_metrics.tune_results(wait_i_kfold_res_fun, summarize = TRUE)
-
-wait_i_last_res_fun <- parsnip_last_fit(wait_i_nls_mod, wait_i_nls_mod_formula, xy_q_in_split)
-
-tune:::collect_metrics.tune_results(wait_i_last_res_fun$metrics_summary, summarize = FALSE)
-
-wait_i_last_res_fun$act_vs_pred_plot
-```
-
-Awesome, it works. Results match the manual approach.
-
-Let's do the whole workflow for the wait for room.
-
-```{r}
-init_nls_wait_r <- c(b1=1.0, b2=1.0, b3=.5, b4=-0.5)
-wait_r_nls_mod <- nonlinear_reg() %>% set_engine(engine = "nls", start = init_nls_wait_r)
-wait_r_nls_mod_formula <- mean_wait_r ~ b1 * (mean_wait_r_dm1 ^ b2) * (num_rooms ^ b3) * (exam_eff_svc_time_cv2 ^ b4)
-
-wait_r_kfold_res <- parsnip_fit_resamples(wait_r_nls_mod, wait_r_nls_mod_formula, in_train_splits, kfold_number, kfold_repeats)
-
-tune:::collect_metrics.tune_results(wait_r_kfold_res, summarize = TRUE)
-
-wait_r_last_res <- parsnip_last_fit(wait_r_nls_mod, wait_r_nls_mod_formula, xy_q_in_split)
-
-tune:::collect_metrics.tune_results(wait_r_last_res$metrics_summary, summarize = FALSE)
-
-wait_r_last_res$act_vs_pred_plot
-
-```
-
-Now, let's see what poly model looks like for wait_r
-
-```{r wait_r_poly_mod2}
-# Create model
-wait_r_poly_mod <- linear_reg(mode = "regression") %>% 
-  set_engine(engine = "lm")
-
-# Create model formula
-wait_r_poly_mod_formula <- mean_wait_r ~ patients_per_clinic_block + I(patients_per_clinic_block^2) +
-                         num_med_techs + I(num_med_techs^2) +
-                         num_rooms + I(num_rooms^2) +
-                         vitals_time_mean + I(vitals_time_mean^2) +
-                         exam_time_mean + I(exam_time_mean^2) +
-                         exam_time_cv2 + I(exam_time_cv2^2) +
-                         post_exam_time_mean + I(post_exam_time_mean^2) +
-                         off_util_staff + I(off_util_staff^2) +
-                         off_util_room + I(off_util_room^2) +
-                         off_util_physician + I(off_util_physician^2)
-
-wait_r_poly_wflow <- 
-  workflow() %>% 
-  add_model(wait_r_poly_mod) %>% 
-  add_formula(wait_r_poly_mod_formula)
-
-# Specify control options
-keep_pred <- control_resamples(save_pred = FALSE)
-
-# Pipe our workflow through fit_resamples
-wait_r_kfold_poly_res <- 
-  wait_r_poly_wflow %>% 
-  fit_resamples(resamples = in_train_splits, control = keep_pred)
-
-collect_metrics(wait_r_kfold_poly_res)
-
+```{r metrics_poly_last}
 # Do last fit
-wait_r_last_poly_res <- last_fit(wait_r_poly_wflow, xy_q_in_split)
+wait_i_last_res <- parsnip_last_fit(wait_i_nls_mod, wait_i_nls_mod_formula, xy_q_in_split)
 
-collect_metrics(wait_r_last_poly_res)
-
-assess_wait_r_last_poly_res <- collect_predictions(wait_r_last_poly_res)
-
-assess_wait_r_last_poly_res %>% 
-  ggplot(aes(x = mean_wait_r, y = .pred)) + 
-  geom_point(alpha = .15) +
-  geom_abline(color = "red") + 
-  coord_obs_pred() + 
-  ylab("Predicted")
-
-
+tune:::collect_metrics.tune_results(wait_i_last_res$metrics_summary, summarize = FALSE)
 ```
 
-## Cubic spline models
+Show the actual vs predicted plot based on the test data. This plot also
+shows that the queueing based model outperforms the poly and spline models.
 
-Cubic splines are another common metamodeling approach. They are flexible and adept at capturing non-linear relationships such as those found in queueing systems.
+... and this model only has 5 parameters whereas the poly and spline models
+have many parameters (10 base inputs plus 10 quadratic terms for the poly model and
+the cubic spline has even more since it is fitting two cubic polynomials for the two
+regions of the spline defined by the single knot)
 
-```{r spline_cv_wf}
-wait_i_spline_mod <- linear_reg(mode = "regression") %>% 
-  set_engine(engine = "lm")
-
-wait_i_spline_mod_formula <- mean_wait_i ~ patients_per_clinic_block + 
-                         num_med_techs +
-                         num_rooms + 
-                         vitals_time_mean +
-                         exam_time_mean +
-                         exam_time_cv2 + 
-                         post_exam_time_mean + 
-                         off_util_staff + 
-                         off_util_room + 
-                         off_util_physician
-
-# For ns(), the default of deg_free = 2 corresponds to 1 inner knot for
-# the natural cubic spline
-wait_i_spline_recipe <- recipe(wait_i_spline_mod_formula, data = xy_q_in_train) %>% 
-  step_ns(patients_per_clinic_block, num_med_techs, num_rooms,
-          vitals_time_mean, exam_time_mean, exam_time_cv2, post_exam_time_mean,
-          off_util_staff, off_util_room, off_util_physician,
-          deg_free = 2)
-
-wait_i_spline_wflow <- 
-  workflow() %>% 
-  add_model(wait_i_spline_mod) %>% 
-  add_recipe(wait_i_spline_recipe)
-
-# Specify control options
-keep_pred <- control_resamples(save_pred = FALSE, save_workflow = FALSE)
-
-# Pipe our workflow through fit_resamples
-final_wait_i_spline_res <- 
-  wait_i_spline_wflow %>% 
-  fit_resamples(resamples = in_train_splits, control = keep_pred)
-
-collect_metrics(final_wait_i_spline_res)
-
-# Do last fit
-wait_i_last_spline_res <- last_fit(wait_i_spline_wflow, xy_q_in_split)
-
-collect_metrics(wait_i_last_spline_res)
-
-assess_wait_i_last_spline_res <- collect_predictions(wait_i_last_spline_res)
-
-assess_wait_i_last_spline_res %>% 
-  ggplot(aes(x = mean_wait_i, y = .pred)) + 
-  geom_point(alpha = .15) +
-  geom_abline(color = "red") + 
-  coord_obs_pred() + 
-  ylab("Predicted")
-
-
+```{r nls_plot}
+wait_i_last_res$act_vs_pred_plot
 ```
 
-## Linear transform version of wait_i model
+### Other performance measures
 
-We should be able to transform this multiplicative power model into a linear model via the application of log function to both sides.
+I did some preliminary analysis on a few of the other performance measures such
+as wait time for the room, wait for the physician and total time in clinic.
+The results are very similar to what we see here for initial wait. Since this
+is the second case study, I think this is sufficient. 
 
-> Ummm, actually no. I forgot about the error term. So, the log transformed model and the original nonlinear model are not equivalent. That's why the fits below aren't as good as the multiplicative nonlinear model.
+## Key takeaways
 
-```{r lm_waiti}
-lm_wait_i <- lm(log(mean_wait_i) ~ log(num_med_techs) + log(mean_wait_i_dm1) +
-                  log(staff_eff_svc_time_cv2) + log(num_rooms),
-                data=xy_q[xy_q$mean_wait_i > 0,])
+The bottom line is that:
 
-summary(lm_wait_i)
-```
+* we used a queueing inspired nonlinear model with only
+five parameters that outperformed poly and spline models with many more paramters.
+* the queueing knowledge used in this case was based on a transient D/M/1 model which is **VERY** different than the steady state queueing knowledge used in the inpatient OB flow example
+* there is **NO** simple cookbook procedure to exploiting domain knowledge (queueing knowledge in this case). Each situation is different and the details of the feature engineering are
+going to be situational. It's unrealistic to expect more.
 
-The coefficients in the linear model don't match the nonlinear model very well. Is it due to the non-negativity restriction?
+## Further work
 
-```{r nls_wait_i_nonneg}
-init_nls_wait_i_nonneg <- c(b1=-3, b2=-3, b3=1.5, b4=1, b5=-1)
+I'll follow up with the results of fitting each of the three models on the "out of design"
+data to see how they do when forced to extrapolate. However, there's more than enough
+here for you guys to get going to integrate some of this into the paper.
 
-# nls_wait_i_nonneg <- nls(mean_wait_i ~ b1 * (num_med_techs ^ b2) * (mean_wait_i_dm1 ^ b3) * (staff_eff_svc_time_cv2 ^ b5) * (num_rooms ^ b4),
-#                  data=xy_q[xy_q$mean_wait_i > 0,], start=init_nls_wait_i_nonneg)
-
-nls_wait_i_nonneg <- nls(mean_wait_i ~ b1 * (num_med_techs ^ b2) * (mean_wait_i_dm1 ^ b3) * (staff_eff_svc_time_cv2 ^ b5) * (num_rooms ^ b4),
-                 data=xy_q[xy_q$mean_wait_i > 0,])
-
-summary(nls_wait_i_nonneg)
-```
-
-What about predictions?
-
-```{r}
-lm_wait_i_fitted <- predict(lm_wait_i, newdata = xy_q)
-
-lm_wait_i_df <- data.frame(mean_wait_i=xy_q$mean_wait_i, pred_mean_wait_i=exp(lm_wait_i_fitted))
-ggplot(lm_wait_i_df) + geom_point(aes(x=mean_wait_i, y=pred_mean_wait_i)) + geom_abline(intercept=0, slope=1)
-ggsave('./initial_wait_lm_fitted_vs_actual.png')
-```
-
-```{r rmse_lm_wait_i}
-rmse_vec(lm_wait_i_df$mean_wait_i, lm_wait_i_df$pred_mean_wait_i)
-```
-
-Here's the wait for room model. Again, not nearly as good as the nonlinear model.
-
-Now let's do the log linear version.
-
-```{r lm_waitr}
-lm_wait_r <- lm(log(mean_wait_r) ~ log(mean_wait_r_dm1) +
-                  log(num_rooms) + log(exam_eff_svc_time_cv2) + log(num_med_techs),
-                data=xy_q[xy_q$mean_wait_r > 0,])
-
-summary(lm_wait_r)
-```
-
-What about predictions?
-
-```{r}
-lm_wait_r_fitted <- predict(lm_wait_r, newdata = xy_q)
-
-lm_wait_r_df <- data.frame(mean_wait_r=xy_q$mean_wait_r, pred_mean_wait_r=exp(lm_wait_r_fitted))
-ggplot(lm_wait_r_df) + geom_point(aes(x=mean_wait_r, y=pred_mean_wait_r)) + geom_abline(intercept=0, slope=1)
-ggsave('./wait_r_lm_fitted_vs_actual.png')
-```
-
-```{r rmse_lm_wait_i}
-rmse_vec(lm_wait_r_df$mean_wait_r, lm_wait_r_df$pred_mean_wait_r)
-```
