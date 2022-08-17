@@ -134,7 +134,8 @@ xy_q_out <- xy_q[ood_rows, ]
 
 ### Initial split of in_split
 
-The partitioning that we did so far of `xy_q` into `xy_q_in` and `xy_q_out` is for eventually seeing how well the various models can extrapolate beyond the experimental design space. Now, let's do an initial split of `xy_q_in` into training and test dataframes. Then we'll use k-crossfold validation on the training data and eventually do final model comparisons on the test data.
+The partitioning that we did so far of `xy_q` into `xy_q_in` and `xy_q_out` is for eventually seeing how well the various models can extrapolate beyond the experimental design space. Now, let's do an initial split of `xy_q_in` into training and test dataframes. Then we'll use k-crossfold validation on the training data and eventually do final model comparisons on the test data. The `initial_split` function is from the `rsample` package which I describe
+more in the next section.
 
 ```{r}
 # Do the 75/25 split
@@ -149,7 +150,40 @@ xy_q_in_test <- testing(xy_q_in_split)
 One of the packages that falls under the `tidymodels` umbrella is called `rsample`. As its
 name suggests, it support various resampling schemes such as bootstrapping and k-crossfold.
 
-In a nutshell, the `rsample::vfold_cv` function just creates a dataframe of [rsplit object](https://cran.r-project.org/web/packages/rsample/vignettes/rsample.html#individual-resamples-are-rsplit-objects) that contains the dataset partition information for each resampling (fold and repeat). The user can then fit models and compute errors on each partition and do whatever kind of error metric averaging desired.
+In a nutshell, the `rsample::vfold_cv` function just creates a dataframe of [rsplit objects](https://cran.r-project.org/web/packages/rsample/vignettes/rsample.html#individual-resamples-are-rsplit-objects) that contains the dataset partition information for each resampling (fold and repeat). The user can then fit models and compute errors on each partition and do whatever kind of error metric averaging desired.
+
+I decided to do 10 repeats of 5-fold cross validation. Obviously, it's trivial
+to change these and rerun if need by.
+
+```{r partition_in}
+set.seed(57)
+# Number of folds
+kfold_number <- 5
+# Number of repeats of entire k-fold process
+kfold_repeats <- 10
+
+# Create the split object
+in_train_splits <- vfold_cv(xy_q_in_train, v = kfold_number, repeats = kfold_repeats)
+
+```
+
+We can see that `in_train_splits` is a tibble of `vfold_split` objects (which are just special case of `rsplit` objects).
+
+```{r}
+in_train_splits
+```
+
+Here's how we can access individual split data. This library uses the term *analysis* data instead of *train* and *assessment* data instead of *test*.
+
+```{r access_split_data_1}
+first_resample <- in_train_splits$splits[[1]]
+head(analysis(first_resample))
+head(assessment(first_resample))
+```
+
+Just wanted to provide a little background on the details of resampling. This
+knowledge comes in handly when I do the queueing based `nls` models as I
+need to manually loop through the splits.
 
 ## Polynomial regression model for initial wait
 
@@ -184,10 +218,10 @@ wait_i_poly_mod_formula <- mean_wait_i ~ patients_per_clinic_block +
 # We'll allow polynomial terms for all of our relevant inputs.
 
 wait_i_poly_recipe <- recipe(wait_i_poly_mod_formula, data = xy_q_in_train) %>% 
-  step_ns(patients_per_clinic_block, num_med_techs, num_rooms,
+  step_poly(patients_per_clinic_block, num_med_techs, num_rooms,
           vitals_time_mean, exam_time_mean, exam_time_cv2, post_exam_time_mean,
           off_util_staff, off_util_room, off_util_physician,
-          deg_free = 2)
+          degree = 2)
 
 # Now create a workflow object that uses the model and recipe above
 wait_i_poly_wflow <- 
@@ -200,27 +234,132 @@ wait_i_poly_wflow <-
 keep_pred <- control_resamples(save_pred = FALSE, save_workflow = FALSE)
 
 # Pipe our workflow through fit_resamples().
-final_wait_i_poly_res <- 
+wait_i_poly_res <- 
   wait_i_poly_wflow %>% 
   fit_resamples(resamples = in_train_splits, control = keep_pred)
+```
 
-collect_metrics(final_wait_i_poly_res)
+Now let's look at the metrics averaged over the 50 splits (10 repeats x 5 folds).
+Notice that there's a small standard error on the metrics indicating that 
+there's not a lot of variability between splits. This is good.
 
+```{r metrics_poly_kfold}
+collect_metrics(wait_i_poly_res)
+```
+
+Now we'll refit one last model using the entire training set and assess its
+performance on the in design test data.
+
+```{r metrics_poly_last}
 # Do last fit
 wait_i_last_poly_res <- last_fit(wait_i_poly_wflow, xy_q_in_split)
 
 collect_metrics(wait_i_last_poly_res)
+```
+As expected, performance on test should be slightly worse than performance on train.
 
+Plot the actual vs predicted on the in design test dataframe.
+
+```{r assess_wait_i_last_poly_res}
+# Grab the predictions on the test data
 assess_wait_i_last_poly_res <- collect_predictions(wait_i_last_poly_res)
 
+# Plot actual vs predicted.
 assess_wait_i_last_poly_res %>% 
   ggplot(aes(x = mean_wait_i, y = .pred)) + 
   geom_point(alpha = .15) +
   geom_abline(color = "red") + 
   coord_obs_pred() + 
   ylab("Predicted")
+```
+Ok, that's the poly model. Let's do natural cubic spline next.
 
+## Natural cubic spline regression model for initial wait
 
+The beauty of the `tidymodels` package is that all of the logic we used
+above is reusable - just need to swap out `step_poly` in the recipe and
+put in `step_ns`.
+
+```{r spline_wf}
+# Create an empty model object of the appropriate type. Since spline regression
+# is really just a linear regression model with some added features (the spline related stuff) we can use the `lm` as the engine.
+wait_i_spline_mod <- linear_reg(mode = "regression") %>% 
+  set_engine(engine = "lm")
+
+# Create a formula object. Later we'll use a recipe to generate the spline terms.
+wait_i_spline_mod_formula <- mean_wait_i ~ patients_per_clinic_block + 
+                         num_med_techs +
+                         num_rooms + 
+                         vitals_time_mean +
+                         exam_time_mean +
+                         exam_time_cv2 + 
+                         post_exam_time_mean + 
+                         off_util_staff + 
+                         off_util_room + 
+                         off_util_physician
+
+# Now we'll create recipe object that contains two steps - the formula and the 
+# natural spline transforms.
+# For step_spline(), the default of deg_free = 2 corresponds to a natural cubic spline with
+# one knot. This is appropriate as no reason to expect non-monotonic behavior of y for any 
+# of the X variables.
+# We'll allow spline terms for all of our relevant inputs.
+
+wait_i_spline_recipe <- recipe(wait_i_spline_mod_formula, data = xy_q_in_train) %>% 
+  step_ns(patients_per_clinic_block, num_med_techs, num_rooms,
+          vitals_time_mean, exam_time_mean, exam_time_cv2, post_exam_time_mean,
+          off_util_staff, off_util_room, off_util_physician,
+          deg_free = 2)
+
+# Now create a workflow object that uses the model and recipe above
+wait_i_spline_wflow <- 
+  workflow() %>% 
+  add_model(wait_i_spline_mod) %>% 
+  add_recipe(wait_i_spline_recipe)
+
+# Specify control options (earlier I was saving predicted values within the
+# resampling scheme but we don't need that now)
+keep_pred <- control_resamples(save_pred = FALSE, save_workflow = FALSE)
+
+# Pipe our workflow through fit_resamples().
+wait_i_spline_res <- 
+  wait_i_spline_wflow %>% 
+  fit_resamples(resamples = in_train_splits, control = keep_pred)
+```
+
+Now let's look at the metrics averaged over the 50 splits (10 repeats x 5 folds).
+Notice that there's a small standard error on the metrics indicating that 
+there's not a lot of variability between splits. This is good.
+
+```{r metrics_spline_kfold}
+collect_metrics(wait_i_spline_res)
+```
+
+Now we'll refit one last model using the entire training set and assess its
+performance on the in design test data.
+
+```{r metrics_spline_last}
+# Do last fit
+wait_i_last_spline_res <- last_fit(wait_i_spline_wflow, xy_q_in_split)
+
+collect_metrics(wait_i_last_spline_res)
+```
+As expected, performance on test should be slightly worse than performance on train.
+The spline model performed slightly worse than the poly-reg model.
+
+Plot the actual vs predicted on the in design test dataframe.
+
+```{r assess_wait_i_last_spline_res}
+# Grab the predictions on the test data
+assess_wait_i_last_spline_res <- collect_predictions(wait_i_last_spline_res)
+
+# Plot actual vs predicted.
+assess_wait_i_last_spline_res %>% 
+  ggplot(aes(x = mean_wait_i, y = .pred)) + 
+  geom_point(alpha = .15) +
+  geom_abline(color = "red") + 
+  coord_obs_pred() + 
+  ylab("Predicted")
 ```
 
 
@@ -712,30 +851,7 @@ Now that we know the basics of model fitting and workflows, let's combine this w
 
 ### k-fold cross validation on the training data
 
-```{r partition_in}
-set.seed(57)
-# Number of folds
-kfold_number <- 5
-# Number of repeats of entire k-fold process
-kfold_repeats <- 10
 
-in_train_splits <- vfold_cv(xy_q_in_train, v = kfold_number, repeats = kfold_repeats)
-
-```
-
-We can see that `in_train_splits` is a tibble of `vfold_split` objects (which are just special case of `rsplit` objects).
-
-```{r}
-in_train_splits
-```
-
-Here's how we can access individual split data. This library uses the term *analysis* data instead of *train* and *assessment* data instead of *test*.
-
-```{r access_split_data_1}
-first_resample <- in_train_splits$splits[[1]]
-head(analysis(first_resample))
-head(assessment(first_resample))
-```
 
 Instead of the `analysis` and `assessment` "convenience" functions, we can also access the split data like this.
 
