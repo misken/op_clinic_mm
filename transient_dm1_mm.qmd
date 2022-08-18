@@ -6,7 +6,7 @@ format:
 
 ---
 
-```{r libs}
+```{r libs, message=FALSE}
 library(ggplot2)
 library(dplyr)
 library(tidymodels)
@@ -574,8 +574,9 @@ Just for fun, here's a single fit on the entire training dataset.
 init_nls_wait_i <- c(b1=.1, b2=-0.6, b3=2, b4=0.5, b5=2)
 
 # Fit the model
-nls_wait_i <- nls(mean_wait_i ~ b1 * (num_med_techs ^ b2) * (mean_wait_i_dm1 ^ b3) * (staff_eff_svc_time_cv2 ^ b5) * (num_rooms ^ b4),
-                 data=xy_q, start=init_nls_wait_i)
+nls_wait_i <- nls(mean_wait_i ~ b1 * (num_med_techs ^ b2) * (mean_wait_i_dm1 ^ b3) *
+                  (num_rooms ^ b4) * (staff_eff_svc_time_cv2 ^ b5),
+                  data=xy_q, start=init_nls_wait_i)
 
 # Check out the model terms
 summary(nls_wait_i)
@@ -637,7 +638,8 @@ init_nls_wait_i <- c(b1=.1, b2=-0.6, b3=2, b4=0.5, b5=2)
 wait_i_nls_mod <- nonlinear_reg() %>% set_engine(engine = "nls", start = init_nls_wait_i)
 
 # Create the nonlinear formula
-wait_i_nls_mod_formula <- mean_wait_i ~ b1 * (num_med_techs ^ b2) * (mean_wait_i_dm1 ^ b3) *(num_rooms ^ b4) * (staff_eff_svc_time_cv2 ^ b5)
+wait_i_nls_mod_formula <- mean_wait_i ~ b1 * (num_med_techs ^ b2) * 
+  (mean_wait_i_dm1 ^ b3) *(num_rooms ^ b4) * (staff_eff_svc_time_cv2 ^ b5)
 
 # Call my custom function to fit the models for each split
 wait_i_kfold_res <- parsnip_fit_resamples(wait_i_nls_mod, wait_i_nls_mod_formula,
@@ -690,35 +692,83 @@ is the second case study, I think this is sufficient.
 Now let's compare the models on their ability to extrapolate beyond the
 experimental design points.
 
-```{r metrics_poly_last_ood}
-# Do final fit - need to use recipe to get poly terms
-wait_i_poly_mod_final_fit <- 
-  wait_i_poly_mod %>% 
-  fit(wait_i_poly_mod_formula, data = xy_q_in_train)
+```{r metrics_poly_final_out}
+wait_i_poly_out_wflow <- 
+  workflow() %>% 
+  add_model(wait_i_poly_mod) %>% 
+  add_recipe(wait_i_poly_recipe)
+  
+wait_i_poly_out_fit <- fit(wait_i_poly_out_wflow, data = xy_q_in)
+wait_i_poly_out_pred <- predict(wait_i_poly_out_fit, new_data = xy_q_out)
 
 
-```
-
-```{r poly_ood_predict_plot}
+# Plot actual vs predicted.
 xy_q_out %>% 
   select(mean_wait_i) %>% 
-  bind_cols(predict(wait_i_poly_mod_final_fit, new_data = xy_q_out)) %>% 
-  ggplot() + geom_point(aes(x=mean_wait_i, y=.pred))
+  bind_cols(wait_i_poly_out_pred) %>%  
+  ggplot(aes(x = mean_wait_i, y = .pred)) + 
+  geom_point(alpha = .15) +
+  geom_abline(color = "red") + 
+  coord_obs_pred() + 
+  xlab("Actual mean initial wait time (min)") +
+  ylab("Metamodel prediction") +
+  ggtitle("Polynomial model - out of design extrapolation")
+
+wait_i_poly_out_rmse <- rmse_vec(xy_q_out$mean_wait_i, wait_i_poly_out_pred$.pred)
+sprintf("RMSE for poly model on out of design points: %10.3f", wait_i_poly_out_rmse)
 ```
-```{r metrics_poly_last_ood}
-# Do final fit
-wait_i_spline_mod_final_fit <- 
-  wait_i_spline_mod %>% 
-  fit(wait_i_poly_mod_formula, data = xy_q_in_train)
+
+```{r metrics_spline_final_out}
+wait_i_spline_out_wflow <- 
+  workflow() %>% 
+  add_model(wait_i_spline_mod) %>% 
+  add_recipe(wait_i_spline_recipe)
+  
+wait_i_spline_out_fit <- fit(wait_i_spline_out_wflow, data = xy_q_in)
+wait_i_spline_out_pred <- predict(wait_i_spline_out_fit, new_data = xy_q_out)
 
 
-```
-
-```{r poly_ood_predict_plot}
+# Plot actual vs predicted.
 xy_q_out %>% 
   select(mean_wait_i) %>% 
-  bind_cols(predict(wait_i_poly_mod_final_fit, new_data = xy_q_out)) %>% 
-  ggplot() + geom_point(aes(x=mean_wait_i, y=.pred))
+  bind_cols(wait_i_spline_out_pred) %>%  
+  ggplot(aes(x = mean_wait_i, y = .pred)) + 
+  geom_point(alpha = .15) +
+  geom_abline(color = "red") + 
+  coord_obs_pred() + 
+  xlab("Actual mean initial wait time (min)") +
+  ylab("Metamodel prediction") +
+  ggtitle("Spline model - out of design extrapolation")
+
+wait_i_spline_out_rmse <- rmse_vec(xy_q_out$mean_wait_i, wait_i_spline_out_pred$.pred)
+sprintf("RMSE for spline model on out of design points: %10.3f", wait_i_spline_out_rmse)
+```
+
+```{r metrics_nls_final_out}
+# Nonlinear models need starting guesses for the params
+init_nls_wait_i <- c(b1=.1, b2=-0.6, b3=2, b4=0.5, b5=2)
+
+# Fit the model
+wait_i_nls_out_fit <- nls(mean_wait_i ~ b1 * (num_med_techs ^ b2) * 
+  (mean_wait_i_dm1 ^ b3) *(num_rooms ^ b4) * (staff_eff_svc_time_cv2 ^ b5),
+                 data=xy_q_in, start=init_nls_wait_i)
+
+wait_i_nls_out_pred <- predict(wait_i_nls_out_fit, newdata = xy_q_out)
+
+
+xy_q_out %>% 
+  select(mean_wait_i) %>% 
+  bind_cols(wait_i_nls_out_pred) %>%  
+  ggplot(aes(x = mean_wait_i, y = wait_i_nls_out_pred)) + 
+  geom_point(alpha = .15) +
+  geom_abline(color = "red") + 
+  coord_obs_pred() + 
+  xlab("Actual mean initial wait time (min)") +
+  ylab("Metamodel prediction") +
+  ggtitle("Queueing based model - out of design extrapolation")
+
+wait_i_nls_out_rmse <- rmse_vec(xy_q_out$mean_wait_i, wait_i_nls_out_pred)
+sprintf("RMSE for nls model on out of design points: %10.3f", wait_i_nls_out_rmse)
 ```
 
 ## Key takeaways
@@ -726,14 +776,12 @@ xy_q_out %>%
 The bottom line is that:
 
 * we used a queueing inspired nonlinear model with only
-five parameters that outperformed poly and spline models with many more paramters.
+five parameters that outperformed poly and spline models with many more paramters in
+both in and out of design predictions (interpolation and extrapolation)
+* the nonlinear queueing based model made sense in the context of the underlying process physics of the simulation model - each term was interpretable and had basis in theory,
 * the queueing knowledge used in this case was based on a transient D/M/1 model which is **VERY** different than the steady state queueing knowledge used in the inpatient OB flow example
 * there is **NO** simple cookbook procedure to exploiting domain knowledge (queueing knowledge in this case). Each situation is different and the details of the feature engineering are
 going to be situational. It's unrealistic to expect more.
 
-## Further work
 
-I'll follow up with the results of fitting each of the three models on the "out of design"
-data to see how they do when forced to extrapolate. However, there's more than enough
-here for you guys to get going to integrate some of this into the paper.
 
