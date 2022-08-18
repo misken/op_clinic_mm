@@ -1,7 +1,9 @@
 ---
 title: "Transient D/M/1 queueing based metamodels"
-format: html
-editor: visual
+format: 
+  html:
+    self-contained: true
+
 ---
 
 ```{r libs}
@@ -124,14 +126,18 @@ ood_rows <- seq(5, 4860, 5)
 design_rows <- setdiff(seq(1, 4860,1), ood_rows)
 ```
 
-Now subset the main dataframe to create the "in design" dataframe and "out of design" dataframe. There are `r nrows(xy_q_in)` rows in the in design dataframe and `r nrows(xy_q_out)` rows in the out of design dataframe.
-
-To begin with, we'll just be focusing on the the in design dataframe, `xy_q_in`.
+Now subset the main dataframe to create the "in design" dataframe and "out of design" dataframe.
 
 ```{r subset_xy_q}
 xy_q_in <- xy_q[design_rows, ]
 xy_q_out <- xy_q[ood_rows, ]
 ```
+
+There are `r nrow(xy_q_in)` rows in the in design dataframe and `r nrow(xy_q_out)` rows in the out of design dataframe.
+
+To begin with, we'll just be focusing on the the in design dataframe, `xy_q_in`.
+
+
 
 ### Initial split of in_split
 
@@ -139,6 +145,7 @@ The partitioning that we did so far of `xy_q` into `xy_q_in` and `xy_q_out` is f
 more in the next section.
 
 ```{r}
+set.seed(23)
 # Do the 75/25 split
 xy_q_in_split <- initial_split(xy_q_in)
 # Create train and test dataframes based on the split
@@ -257,7 +264,8 @@ wait_i_last_poly_res <- last_fit(wait_i_poly_wflow, xy_q_in_split)
 
 collect_metrics(wait_i_last_poly_res)
 ```
-As expected, performance on test should be slightly worse than performance on train.
+The RMSE on test is slightly smaller than RMSE on train which is unusual but
+can happen due to randomness.
 
 Plot the actual vs predicted on the in design test dataframe.
 
@@ -347,8 +355,7 @@ wait_i_last_spline_res <- last_fit(wait_i_spline_wflow, xy_q_in_split)
 
 collect_metrics(wait_i_last_spline_res)
 ```
-As expected, performance on test should be slightly worse than performance on train.
-The spline model performed slightly worse than the poly-reg model.
+
 
 Plot the actual vs predicted on the in design test dataframe.
 
@@ -652,7 +659,7 @@ tune:::collect_metrics.tune_results(wait_i_kfold_res, summarize = TRUE)
 Now we'll refit one last model using the entire training set and assess its
 performance on the in design test data.
 
-```{r metrics_poly_last}
+```{r metrics_nls_last}
 # Do last fit
 wait_i_last_res <- parsnip_last_fit(wait_i_nls_mod, wait_i_nls_mod_formula, xy_q_in_split)
 
@@ -677,6 +684,42 @@ I did some preliminary analysis on a few of the other performance measures such
 as wait time for the room, wait for the physician and total time in clinic.
 The results are very similar to what we see here for initial wait. Since this
 is the second case study, I think this is sufficient. 
+
+## Out of design analysis
+
+Now let's compare the models on their ability to extrapolate beyond the
+experimental design points.
+
+```{r metrics_poly_last_ood}
+# Do final fit - need to use recipe to get poly terms
+wait_i_poly_mod_final_fit <- 
+  wait_i_poly_mod %>% 
+  fit(wait_i_poly_mod_formula, data = xy_q_in_train)
+
+
+```
+
+```{r poly_ood_predict_plot}
+xy_q_out %>% 
+  select(mean_wait_i) %>% 
+  bind_cols(predict(wait_i_poly_mod_final_fit, new_data = xy_q_out)) %>% 
+  ggplot() + geom_point(aes(x=mean_wait_i, y=.pred))
+```
+```{r metrics_poly_last_ood}
+# Do final fit
+wait_i_spline_mod_final_fit <- 
+  wait_i_spline_mod %>% 
+  fit(wait_i_poly_mod_formula, data = xy_q_in_train)
+
+
+```
+
+```{r poly_ood_predict_plot}
+xy_q_out %>% 
+  select(mean_wait_i) %>% 
+  bind_cols(predict(wait_i_poly_mod_final_fit, new_data = xy_q_out)) %>% 
+  ggplot() + geom_point(aes(x=mean_wait_i, y=.pred))
+```
 
 ## Key takeaways
 
