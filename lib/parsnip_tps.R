@@ -103,10 +103,14 @@ parsnip_tps <- function(model, model_formula, train_data, test_data,
   plot_df <- data.frame(test_y_pred, test_y_actual)
   names(plot_df) <- c(paste(y_name,'pred',sep='_'), paste(y_name,'act',sep='_'))
   
-  g_title <- ifelse(length(scenario)>0, scenario, paste(method, y_name))
+  g_title <- "Nonlinear queueing based model"
   
   g <- ggplot(data=plot_df) + ggtitle(g_title) + 
-    aes_string(x=names(plot_df)[1], y=names(plot_df)[2]) + geom_point() + geom_abline()
+    aes_string(x=names(plot_df)[1], y=names(plot_df)[2]) + 
+    coord_obs_pred() +
+    geom_point(alpha = .15) + geom_abline(color = "red") + 
+    xlab("Actual mean initial wait time (min)") +
+    ylab("Metamodel prediction")
   
   results <- list(rmse_train=rmse_train, rmse_test=rmse_test,
                   mae_train=mae_train, mae_test=mae_test,
