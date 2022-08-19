@@ -632,7 +632,48 @@ set_pred(
 Now we have a custom model type named "nonlinear_reg" that we can use. Before
 trying to use with the full blown resampling scheme, let's just see if we can
 make it work for a simple fit, predict, and assess cycle. We'll just fit
-the model on the entire within design training set, 
+the model on the entire within design training set, `xy_q_in_train`.
+
+```{r}
+# Create nonlinear_reg model object
+init_nls_wait_i <- c(b1=.1, b2=-0.6, b3=2, b4=0.5, b5=2)
+wait_i_nls_mod <- nonlinear_reg() %>% set_engine(engine = "nls", start = init_nls_wait_i)
+
+# Create the nonlinear formula
+wait_i_nls_mod_formula <- mean_wait_i ~ b1 * (num_med_techs ^ b2) * 
+  (mean_wait_i_dm1 ^ b3) *(num_rooms ^ b4) * (staff_eff_svc_time_cv2 ^ b5)
+
+# Fit the model
+wait_i_nls_fit <- wait_i_nls_mod %>% 
+  fit(formula = wait_i_nls_mod_formula, data = xy_q_in_train)
+
+wait_i_nls_fit
+```
+
+Great. It works. We can make predictions and compute error metrics.
+
+```{r}
+predict(wait_i_nls_fit, new_data = xy_q_in_test) %>% 
+  head()
+```
+
+But, we really need to add the k-crossfold resampling just as we did with the
+polynomial and spline models. Before we try that, we can actually get a preview
+of the problem by tweaking the previous example to use a simple tidy workflow
+object. The model and formula objects are fine. Let's use them in a workflow.
+
+```{r}
+# Create simple workflow
+wait_i_nls_wf <- workflow() %>% 
+  add_model(wait_i_nls_mod) %>% 
+  add_formula(wait_i_nls_mod_formula)
+
+# Pipe the workflow into fit() to fit the model
+wait_i_nls_wf %>% 
+  fit(data = xy_q_in_train)
+
+```
+
 
 
 
