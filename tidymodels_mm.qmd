@@ -1,0 +1,892 @@
+---
+title: "Using tidymodels for simulation metamodeling (and a mini-rant on academic publishing)"
+format: 
+  html:
+    self-contained: true
+
+---
+
+```{r libs, message=FALSE}
+library(ggplot2)
+library(dplyr)
+library(tidymodels)
+library(MLmetrics)
+library(stringr)
+```
+
+## Background
+
+I've written a multipart blog series on using R to do simulation metamodeling. The
+blog posts were inspired by a research project in which I was using queueing
+inspired feature engineering to try to improve metamodel accuracy and interpretability.
+The setting for the study was a simulation of inpatient flow through hospital obstetrical units.
+That study also was an opportunity to learn about the [caret]() package and do
+some more advanced R programming to automate model fitting and assessment with
+caret. 
+
+The following blog posts I have done over the past few years provide some background on building simulation metamodels for this patient flow network.
+
+- [Comparing predictive models for obstetrical unit occupancy using caret - Part 1](https://misken.github.io/blog/obsim_caret_part1/)
+- [Comparing predictive model performance using caret - Part 2: A simple caret automation function](https://misken.github.io/blog/obsim_caret_part2/)
+- [Comparing predictive model performance using caret - Part 3: Put it all together](https://misken.github.io/blog/obsim_caret_part3/)
+
+Eventually, I redid the entire study in Python and turned it into
+a paper that is currently under review (as of August 2022). For the new study,
+I rewrote the discrete event simulation model using [SimPy]() and we have
+released both the model and all of the metamodeling machinery as an open
+source project so that others can see exactly what we did and to show that everything is reproducible. Here a links to that repo as well as some blog posts I did on using
+SimPy for patient flow simulation modeling.
+
+- [obflowsim-mm](https://github.com/misken/obflowsim-mm)
+- [Getting started with SimPy for patient flow modeling](https://misken.github.io/blog/simpy-getting-started/)
+- [An object oriented SimPy patient flow simulation model](https://misken.github.io/blog/simpy-first-oo-patflow-model/)
+
+During the first round of peer review, the paper was generally well received but
+the reviewers wanted to see some changes (and I'm paraphrasing here and being a little snarky):
+
+* Even though we have a word limit that you've already exceeded, can you add a second case
+study to the paper? You know, can you build another simulation model of a different system and redo all of the analysis for that new model?
+* Can you generalize your feature engineering approach so that anyone could do it for a wide range of different simulation models? And can we have more details about the
+queueing based feature engineering?
+* Regarding the fact that we were releasing all of our code and that any details not
+present in the (word limit constrained) paper were completely available in the well
+documented source code and explainer notebook available in the GitHub repo - nothing. No comment. Crickets.
+
+My immediate reaction was, "ummm, how about no." It's a pretty involved study and 
+we are already over the word limit, and you want a whole bunch of more stuff that
+involves a whole bunch more work. Not sure how to stuff 20 lbs into a 10 lb bag
+that already has 11 lbs in it. Having been in academia since 1999, I took
+a deep breath and ... remembered that many years ago I had worked on another healthcare related
+simulation metamodeling project involving an outpatient clinic. I had presented
+the results at the 2006 [INFORMS](https://www.informs.org/) Conference but had never turned it into
+a full journal paper. I knew I still had all of the code. This will be pretty
+easy I thought - I'll just regenerate the output plots and we can add this
+as second case study for the paper. Silly me. It ended up being a huge amount of
+work but did give me a chance to finally dig into the R tidymodels package. I
+thought it would be a good idea to document some of the challenges and benefits
+of using tidymodels. So here goes.
+
+## Background on the simulation study
+
+Long ago I was involved in a project in which we were building decision support tools for clinic management. Our goal was to have a relatively simple, spreadsheet based tool, that could be used to assess the performance implications of various combinations of key clinic demand and resource related variables. For, example, we wanted to be able to see how increasing the number of patients scheduled in a four hour clinic block or the number of exam rooms per physician would impact things like patient wait times, resource utilization, and the length of time needed to care for all of the patients (since running the clinic past the scheduled closing time resulted in undesirable staffing related consequences and costs).
+
+We developed a discrete event simulation model and ran a series of experiments in which we systematically varied key inputs and tracked key performance measures. Here's a flow
+chart for which the simulation model was developed:
+
+![Clinic flow](images/clinic_flow.png)
+The experimental design included the following input variables as their associated levels:
+
+-   number of medical technicians (2, 3, 4, 5)
+-   number of exam rooms per physician (1, 2, 3)
+-   mean number of minutes to complete the vital signs portion of the exam by the support staff (6, 9, 12 minutes)
+-   mean number of minutes to complete the exam by the physician (10, 15, 20 mins)
+-   the coefficient of variation squared of the exam time (1.0, 0.5, 0.2)
+-   mean number of minutes to complete post-exam portion of the visit by the support staff (2, 5, 8 minutes)
+-   number of patients in the 4 hour clinic session - patients arrive in groups of two at fixed intervals based on number of total patients. The 5 arrival levels depend on the exam time mean:
+    -   10 min: 32, 36, 40, 44, 48 patients
+    -   15 min: 24, 28, 32, 36, 40 patients
+    -   20 min: 16, 20, 24, 28, 32 patients
+
+The key performance measures (output variables) were:
+
+-   initial wait time for patient to see med tech for vital signs
+-   mean time until patient saw physician to start exam
+-   mean total time in clinic for the patient
+-   end of the clinic day time
+
+We then developed an Excel based tool that simply did "table lookups" to create plots that showed how the performance measures varies across the levels of the input variables. 
+That original study was then followed by a research project into simulation metamodels for this same clinic experiment. That led to a [presentation at th INFORMS 2006 Annual Conference](https://www.researchgate.net/publication/362805793_An_outpatient_clinic_simulation_metamodeling_odyssey).
+
+Now I am revisiting this same scenario again for this current paper. After looking more closely at the original work, there were a few things I didn't like in terms of using it directly in the paper.
+
+1. Most importantly, since the simulation model was written so long ago and in MedModel, I had no access to the details of the simulation logic anymore.
+2. Also, while the exam time was modeled with an erlang distribution that allowed me to create realistic right skewed distributions and to easily have a few different experiment levels for the coefficient of variation squared (CV2( of the exam time distribution, the distributions used for the other stages of care (vital signs, post exam care, and room turnover) were all exponential distributions. The exponential distributions are pretty unrealistic. I wanted these to be erlang distributions as well so that I could adjust their CV2 values to make them more realistic.
+3.In the experimental design, there were five levels for the number of patients in each 4 hour clinic block. It looks like I had used levels 1, 3 and 5 as my training scenarios, and levels 2 and 4 for the test data. It would have been better if I had done a standard random train-test split with 75% of the scenarios in train and the other 25% in split (there are 4860 scenarios in total). I've attached a csv file that contains the experimental design - it's one row per scenario.
+
+So, I rewrote the [outpatient clinic simulation model in Python](https://github.com/misken/op_clinic) (uses the SimPy library). The logic is the same as the original model but incorporates the changes above and automates a bunch of simulation output analysis to create metamodeling input data sets (similar to what I did for the obflow case study in the paper). Each of the 4860 scenarios was simulated with 50 independent replications which then formed the basis for computing the scenario specific summary stats that get used as metamodeling inputs. It takes a few hours to make all the simulation runs.
+
+
+## About the queueing inspired terms
+
+In the OB patient flow metamodels, the queueing inspired terms were things related to steady state analysis of the tandem queueing system and relied on things like overall resource load and utilization and steady state queueing results for M/G/s queueing systems. In contrast, this outpatient modeling problem involves transient analysis (a 4hr clinic block) of a system in which a finite number of scheduled patients arrive for care. Thus, steady state results are **not** relevant and we can (and do) intentionally overload the system since there are a finite number of patients who will eventually go through the clinic. Obviously, the more you overload the system, the longer the patient wait times and the longer the system has to operate beyond the 4 hour planned end of the day to clear all of the patients.
+
+So, the queuing inspired features for this problem uses known results for transient analysis of D/M/1 queues (see Slide 13 of the INFORMS presentation). In addition, staff, room and physician offered utilization terms were also included. Unlike in the steady state based scenario of the OB patient flow model, these terms could be greater than 1 (again, an overloaded system). I rewrote the R code that I had originally wrote that had the D/M/1 functions and moved it into Python. So, all of the feature engineering was done as part of the Python simulation output analysis. The result is a csv file, `xy_q.csv` that contains all of the base inputs, queueing related features, and output measures. Then in R, I simply read it into a dataframe and then the model formulas just used the necessary columns depending on the model. In addition,
+as you'll see, the R tidymodels package made it easy to do both polynomial and
+natural cubic spline based regression models to compare to the queueing inspired
+nonlinear model.
+
+## Overview of the analysis with tidymodels
+
+What I decided to do was to just focus on one of the performance measures - initial
+wait time for patient to get staff to begin the clinic care process.
+
+For this performance measure, I fit three different metamodels:
+
+* a nonlinear multiplicative power model based on queueing inspired features
+* a polynomial regression model
+* a natural cubic spline regression model
+
+For the polynomial and spline models, I was able to use the `tidymodels` package
+to create workflows that made it easy to fit a model using repeated k-crossfold resampling
+and then compute RMSE and an actual vs predicted plot for each model based on
+test data. The [Tidy Modeling with R](https://www.tmwr.org/) online book by Kuhn
+and Silge provides a very good introduction to the tidymodels package and how
+its consitutient packages can be used for different parts of the modeling process.
+
+For those who have used the sci-kit learn package in Python, tidymodels will feel
+familiar except that different parts of the modeling process are handled by
+different packages under the tidymodels meta-package.
+
+* "empty" model objects are created (parsnip)
+* adding model formulas and various preprocessing steps are done by creating
+a *recipe* (`recipes`)
+* resampling schemes such as k-crossfold validation or bootstrapping (`rsample`)
+* hyperparameter tuning (`tune` and `dial`)
+* model fitting (`parsnip` and `tune`)
+* model predictions (`parsnip`)
+* model assessment (`yardstick` and `tune`)
+* put it all together into a modeling workflow, similar to a pipeline in scikit-learn (`workflows`)
+
+While the presence of so many different packages can be daunting at first, by
+loading `tidymodels` you get access to all of the packages. The details of which
+package does what became very important for this project when we needed to do
+some deep digging into the API and even the source code to figure out where
+things were going awry. More on this later.
+
+## Reading in of the full input-output dataset
+
+First read in the matrix that contains all possible predictors as well as all possible target variables. Note that some of the predictors are the queueing inspired terms and others are the base inputs used in the simulation experimental design.
+
+```{r read_xy_q}
+xy_q <- read.csv('data/xy_q.csv')
+```
+
+```{r}
+str(xy_q)
+```
+
+The output (dependent) variables, or performance measures, are the last 6 in the list above. We won't be
+using all of the input variables in the study for the paper as not all are relevant
+for the `mean_wait_i` ("i" for initial) variable we'll be focusing on.
+
+## Details on data partitioning
+
+### Create of in design and out of design dataframes
+
+As described above, there are a total of 4860 scenarios and within those there
+are 5 different levels of number of patients per clinic session. In addition to assessing how accurate the various models are within the confines of the experimental design, I thought it would also be interesting to assess their relative peformance in extrapolation beyond the experimental design. So, I decided to treat the highest arrival rate level as the "out of design" holdout set. These scenarios correspond to every 5th row in the the `xy_q` dataframe.
+
+Create sequence of row numbers to include in the out of design set and the in design set.
+
+```{r ood_holdout}
+
+ood_rows <- seq(5, 4860, 5)
+design_rows <- setdiff(seq(1, 4860,1), ood_rows)
+```
+
+Now subset the main dataframe to create the "in design" dataframe and "out of design" dataframe.
+
+```{r subset_xy_q}
+xy_q_in <- xy_q[design_rows, ]
+xy_q_out <- xy_q[ood_rows, ]
+```
+
+There are `r nrow(xy_q_in)` rows in the in design dataframe and `r nrow(xy_q_out)` rows in the out of design dataframe.
+
+To begin with, we'll just be focusing on the the in design dataframe, `xy_q_in`.
+
+### Initial split of in_split
+
+The partitioning that we did so far of `xy_q` into `xy_q_in` and `xy_q_out` is for eventually seeing how well the various models can extrapolate beyond the experimental design space. Now, let's do an initial split of `xy_q_in` into training and test dataframes. Then we'll use k-crossfold validation on the training data and eventually do final model comparisons on the test data. The `initial_split` function is from the `rsample` package which I describe
+more in the next section.
+
+```{r}
+set.seed(23)
+# Do the 75/25 split
+xy_q_in_split <- initial_split(xy_q_in)
+# Create train and test dataframes based on the split
+xy_q_in_train <- training(xy_q_in_split)
+xy_q_in_test <- testing(xy_q_in_split)
+```
+
+### k-fold xval on in design scenarios
+
+One of the packages that falls under the `tidymodels` umbrella is called `rsample`. As its
+name suggests, it support various resampling schemes such as bootstrapping and k-crossfold.
+
+In a nutshell, the `rsample::vfold_cv` function just creates a dataframe of [rsplit objects](https://cran.r-project.org/web/packages/rsample/vignettes/rsample.html#individual-resamples-are-rsplit-objects) that contains the dataset partition information for each resampling (fold and repeat). The user can then fit models and compute errors on each partition and do whatever kind of error metric averaging desired.
+
+I decided to do 10 repeats of 5-fold cross validation. Obviously, it's trivial
+to change these and rerun if need by.
+
+```{r partition_in}
+set.seed(57)
+# Number of folds
+kfold_number <- 5
+# Number of repeats of entire k-fold process
+kfold_repeats <- 10
+
+# Create the split object
+in_train_splits <- vfold_cv(xy_q_in_train, v = kfold_number, repeats = kfold_repeats)
+
+```
+
+We can see that `in_train_splits` is a tibble of `vfold_split` objects (which are just special case of `rsplit` objects).
+
+```{r}
+in_train_splits
+```
+
+Here's how we can access individual split data. This library uses the term *analysis* data instead of *train* and *assessment* data instead of *test*.
+
+```{r access_split_data_1}
+first_resample <- in_train_splits$splits[[1]]
+head(analysis(first_resample))
+head(assessment(first_resample))
+```
+
+
+
+## Polynomial regression model for initial wait
+
+Before looking at the nonlinear queueing based model, let's fit a polynomial
+regression model. In addition, we want to do repeated k-crossfold resampling
+to get a sense of how variable the model is when based on different fit
+datasets. We can do this all quite easily using the newish `tidymodels` package.
+It allows us to build workflow objects to properly handle the model fitting and
+assessment within the context of resampling.
+
+```{r poly_wf}
+# Create an empty model object of the appropriate type. Since poly regression
+# is really just a linear regression model with some added features (powers of inputs) we can use the `lm` as the engine.
+wait_i_poly_mod <- linear_reg(mode = "regression") %>% 
+  set_engine(engine = "lm")
+
+# Create a formula object. Later we'll use a recipe to generate the polynomial terms.
+wait_i_poly_mod_formula <- mean_wait_i ~ patients_per_clinic_block + 
+                         num_med_techs +
+                         num_rooms + 
+                         vitals_time_mean +
+                         exam_time_mean +
+                         exam_time_cv2 + 
+                         post_exam_time_mean + 
+                         off_util_staff + 
+                         off_util_room + 
+                         off_util_physician
+
+# Now we'll create a recipe object that contains two steps - the formula and the 
+# polynomial transforms.
+# For step_poly(), the default of degree = 2 corresponds to using up to squared terms.
+# We'll allow polynomial terms for all of our relevant inputs.
+
+wait_i_poly_recipe <- recipe(wait_i_poly_mod_formula, data = xy_q_in_train) %>% 
+  step_poly(patients_per_clinic_block, num_med_techs, num_rooms,
+          vitals_time_mean, exam_time_mean, exam_time_cv2, post_exam_time_mean,
+          off_util_staff, off_util_room, off_util_physician,
+          degree = 2)
+
+# Now create a workflow object that uses the model and recipe above
+wait_i_poly_wflow <- 
+  workflow() %>% 
+  add_model(wait_i_poly_mod) %>% 
+  add_recipe(wait_i_poly_recipe)
+
+# Specify control options (earlier I was saving predicted values within the
+# resampling scheme but we don't need that now)
+keep_pred <- control_resamples(save_pred = FALSE, save_workflow = FALSE)
+
+# Pipe our workflow through tune::fit_resamples().
+wait_i_poly_res <- 
+  wait_i_poly_wflow %>% 
+  fit_resamples(resamples = in_train_splits, control = keep_pred)
+```
+
+Now let's look at the metrics averaged over the 50 splits (10 repeats x 5 folds).
+Notice that there's a small standard error on the metrics indicating that 
+there's not a lot of variability between splits. This is good. The `collect_metrics` function
+makes it easy to pull out and consolidate metrics. 
+
+```{r metrics_poly_kfold}
+collect_metrics(wait_i_poly_res)
+```
+
+Now we'll refit one last model using the entire training set and assess its
+performance on the in design test data. 
+
+```{r metrics_poly_last}
+# Do last fit
+wait_i_last_poly_res <- last_fit(wait_i_poly_wflow, xy_q_in_split)
+
+collect_metrics(wait_i_last_poly_res)
+```
+The RMSE on test is slightly smaller than RMSE on train which is unusual but
+can happen due to randomness.
+
+Plot the actual vs predicted on the in design test dataframe.
+
+```{r assess_wait_i_last_poly_res}
+# Grab the predictions on the test data
+assess_wait_i_last_poly_res <- collect_predictions(wait_i_last_poly_res)
+
+# Plot actual vs predicted.
+assess_wait_i_last_poly_res %>% 
+  ggplot(aes(x = mean_wait_i, y = .pred)) + 
+  geom_point(alpha = .15) +
+  geom_abline(color = "red") + 
+  coord_obs_pred() + 
+  xlab("Actual mean initial wait time (min)") +
+  ylab("Metamodel prediction") +
+  ggtitle("Polynomial regression model")
+```
+Ok, that's the polynomial regression model. Let's do natural cubic spline next.
+
+## Natural cubic spline regression model for initial wait
+
+The beauty of the `tidymodels` package is that all of the logic we used
+above is reusable - just need to swap out `step_poly` in the recipe and
+put in `step_ns`.
+
+```{r spline_wf}
+# Create an empty model object of the appropriate type. Since spline regression
+# is really just a linear regression model with some added features (the spline related stuff) we can use the `lm` as the engine.
+wait_i_spline_mod <- linear_reg(mode = "regression") %>% 
+  set_engine(engine = "lm")
+
+# Create a formula object. Later we'll use a recipe to generate the spline terms.
+wait_i_spline_mod_formula <- mean_wait_i ~ patients_per_clinic_block + 
+                         num_med_techs +
+                         num_rooms + 
+                         vitals_time_mean +
+                         exam_time_mean +
+                         exam_time_cv2 + 
+                         post_exam_time_mean + 
+                         off_util_staff + 
+                         off_util_room + 
+                         off_util_physician
+
+# Now we'll create recipe object that contains two steps - the formula and the 
+# natural spline transforms.
+# For step_spline(), the default of deg_free = 2 corresponds to a natural cubic spline with
+# one knot. This is appropriate as no reason to expect non-monotonic behavior of y for any 
+# of the X variables.
+# We'll allow spline terms for all of our relevant inputs.
+
+wait_i_spline_recipe <- recipe(wait_i_spline_mod_formula, data = xy_q_in_train) %>% 
+  step_ns(patients_per_clinic_block, num_med_techs, num_rooms,
+          vitals_time_mean, exam_time_mean, exam_time_cv2, post_exam_time_mean,
+          off_util_staff, off_util_room, off_util_physician,
+          deg_free = 2)
+
+# Now create a workflow object that uses the model and recipe above
+wait_i_spline_wflow <- 
+  workflow() %>% 
+  add_model(wait_i_spline_mod) %>% 
+  add_recipe(wait_i_spline_recipe)
+
+# Specify control options (earlier I was saving predicted values within the
+# resampling scheme but we don't need that now)
+keep_pred <- control_resamples(save_pred = FALSE, save_workflow = FALSE)
+
+# Pipe our workflow through fit_resamples().
+wait_i_spline_res <- 
+  wait_i_spline_wflow %>% 
+  fit_resamples(resamples = in_train_splits, control = keep_pred)
+```
+
+Again, check out the metrics.
+
+```{r metrics_spline_kfold}
+collect_metrics(wait_i_spline_res)
+```
+
+Now we'll refit one last model using the entire training set and assess its
+performance on the in design test data.
+
+```{r metrics_spline_last}
+# Do last fit
+wait_i_last_spline_res <- last_fit(wait_i_spline_wflow, xy_q_in_split)
+
+collect_metrics(wait_i_last_spline_res)
+```
+
+
+Plot the actual vs predicted on the in design test dataframe.
+
+```{r assess_wait_i_last_spline_res}
+# Grab the predictions on the test data
+assess_wait_i_last_spline_res <- collect_predictions(wait_i_last_spline_res)
+
+# Plot actual vs predicted.
+assess_wait_i_last_spline_res %>% 
+  ggplot(aes(x = mean_wait_i, y = .pred)) + 
+  geom_point(alpha = .15) +
+  geom_abline(color = "red") + 
+  coord_obs_pred() + 
+  xlab("Actual mean initial wait time (min)") +
+  ylab("Metamodel prediction") +
+  ggtitle("Natural spline regression model")
+```
+The natural cubic spline and the polynomial regression models have
+pretty similar performance.
+
+
+## Nonlinear queueing inspired model for initital wait
+
+Finally, let's look at the queueing based nonlinear model.
+
+See slides 13-16 in the INFORMS 2006 presentation for the details behind the
+DM1 based model.
+
+In our dataset, you'll find a queueing related featured named `mean_wait_i_dm1`
+which corresponds to a DM1 based approximation for the initial mean wait time.
+Of course our model will include additional terms as well, but it's interesting
+to see how just this single approximation does.
+
+
+```{r wait_i_dm1}
+ggplot(xy_q_in) + geom_point(aes(x=mean_wait_i, y=mean_wait_i_dm1))
+```
+
+How does the raw DM1 approximation do?
+
+-   moves in the right general direction
+-   clearly a non-linear relationship
+-   banding suggests additional variables will help
+
+None of this is surprising since the clinic is **not** a DM1 queue.
+
+Let's fit a multiplicative power model that includes terms that attempt to correct for the violated assumptions of the DM1 model.
+
+-   there are greater than 1 med techs (i.e. it's a multi-server queue)
+-   there are network effects and the number of rooms will also affect wait time via its impact on med tech utilization (e.g. increased med tech availability due to lack of room availability to begin next exam)
+-   the service time is not exponential but is approximately hypererlang since staff could be doing vitals, post-care or room turnover
+
+The proposed model is
+
+$$
+W_I = b_1 \frac{W_{D}^{b_2}R^{b_3}C^{b_4}}{S^{b_5}}
+$$
+
+where
+
+-   $W_{D}$ is the mean wait in the approximating $D/M/1$ queue
+-   $R$ is the number of exam rooms
+-   $C$ is the coefficient of variation squared of an approximate effective service time distribution for staff (hyper-erlang)
+-   $S$ is the number medical technician staff
+
+You can think of the $R, C, S$ terms along with the power parameters as being adjustments to the raw DM1 based term, $W_{D}$. Clearly, this is a nonlinear model and we will
+estimate $b_1, ..., b_5$ using R's `nls()` function.
+
+ 
+
+### Developing a parsnip model that uses nls()
+
+It would be great if we could simply use similar code to what we did above
+for the polynomial and spline based regression models. Unfortunately, it's not
+that easy. To begin with, nonlinear regression, and in particular the`nls()`
+engine isn't supported as of yet in [parsnip](https://parsnip.tidymodels.org/), the tidymodels package
+that handles model building. As I starting digging into (no pun intended) this package for
+the first time, I realized, of course, a "parsnip" is not a "carrot". The goal
+of parsnip, written by the same author who developed the caret package, is stated
+on their webpage.
+
+> The goal of parsnip is to provide a tidy, unified interface to models that can be used to try a range of models without getting bogged down in the syntactical minutiae of the underlying packages.
+
+However, parsnip is **not** the new caret. It's more like tidymodels is the
+new caret. Parsnip just handles the unified modeling interface and has
+been designed with the goal of being easy for users to add their own custom
+models. They have a very nice tutorial on doing just that:
+
+* [How to build a parsnip model](https://www.tidymodels.org/learn/develop/models/)
+
+So, let's create our own `"nonlinear_reg"` model that relies on `nls()` as
+the model fitter. Since `nls()` needs a starting guess for the parameter values,
+we need to figure out how and where such a starting guess fits into a 
+custom parsnip model.
+
+Our high level design:
+
+-   Function name: `nonlinear_reg`
+-   Mode: "regression"
+-   Engine: "nls"
+
+I just followed the steps in the tutorial listed above.
+
+**Step 1. Register the model, modes, and arguments**
+
+```{r register_nls}
+set_new_model("nonlinear_reg")
+set_model_mode(model = "nonlinear_reg", mode = "regression")
+set_model_engine(
+  "nonlinear_reg", 
+  mode = "regression", 
+  eng = "nls"
+)
+set_dependency("nonlinear_reg", eng = "nls", pkg = "stats")
+
+# We can examine what we just created
+show_model_info("nonlinear_reg")
+
+```
+
+**Step 2. Create the model function**
+
+Now we declare the main arguments for the model. This is intended for turning parameters I think. 
+
+```{r}
+# set_model_arg(
+#   model = "nonlinear_reg",
+#   eng = "nls",
+#   parsnip = "start",
+#   original = "start",
+#   # Not sure what to use for func arg
+#   func = list(pkg = "foo", fun = "bar"),
+#   has_submodel = FALSE
+# )
+# show_model_info("nonlinear_reg")
+```
+
+```{r}
+nonlinear_reg <-
+  function(mode = "regression",  start = NULL) {
+    # Check for correct mode
+    if (mode  != "regression") {
+      rlang::abort("`mode` should be 'regression'")
+    }
+    
+    # Capture the arguments in quosures
+    args <- list(start = rlang::enquo(start))
+    
+    # Create specification
+    new_model_spec(
+      "nonlinear_reg",
+      args = args,
+      mode = mode,
+      engine = NULL,
+      eng_args = NULL,
+      method = NULL
+    )
+  }
+```
+
+**Step 3. Add a fit module**
+
+```{r}
+set_fit(
+  model = "nonlinear_reg",
+  eng = "nls",
+  mode = "regression",
+  value = list(
+    interface = "formula",
+    protect = c("formula", "data"),
+    func = c(pkg = "stats", fun = "nls"),
+    defaults = list()
+  )
+)
+
+show_model_info("nonlinear_reg")
+```
+
+```{r}
+set_encoding(
+  model = "nonlinear_reg",
+  eng = "nls",
+  mode = "regression",
+  options = list(
+    predictor_indicators = "none",
+    compute_intercept = FALSE,
+    remove_intercept = FALSE,
+    allow_sparse_x = FALSE
+  )
+)
+```
+
+**Step 4. Add modules for prediction**
+
+```{r}
+response_info <- 
+  list(
+    pre = NULL,
+    post = NULL,
+    func = c(fun = "predict"),
+    args =
+      # These lists should be of the form:
+      # {predict.nls argument name} = {values provided from parsnip objects}
+      list(
+        # We don't want the first two arguments evaluated right now
+        # since they don't exist yet. 
+        object = quote(object$fit),
+        newdata = quote(new_data)
+      )
+  )
+
+set_pred(
+  model = "nonlinear_reg",
+  eng = "nls",
+  mode = "regression",
+  type = "numeric",
+  value = response_info
+)
+```
+
+Now we have a custom model type named "nonlinear_reg" that we can use. Before
+trying to use with the full blown resampling scheme, let's just see if we can
+make it work for a simple fit, predict, and assess cycle. We'll just fit
+the model on the entire within design training set, 
+
+
+
+
+
+
+
+
+
+
+While
+I was able to successfully use my custom "nonlinear_reg" model to fit a model
+and assess its predictive accuracy, the `fit_resamples()` function didn't
+like the fact that the model was nonlinear and refused to fit it for each of
+the data splits (even though I could manually fit it for any split). So,
+that's where I needed to write custom functions that looped through splits
+and did the model fitting.
+
+
+Unfortunately, for the nonlinear model which uses `nls()` as its fitting engine,
+I had to do write a bunch of custom code to handle some of the workflow steps as
+currently one of the `tidymodels` packages which does the resampling (a package
+called `tune`) doesn't support nonlinear models that contain powers that must
+be estimated. Nevertheless, I got it all working and did the RMSE and plot
+just as I did for the poly and spline models. The steps just look a little different.
+
+Note: I actually submitted an Issue to the `tune` repo on GitHub regarding this 
+problem - see https://github.com/tidymodels/tune/issues/534.
+Unfortunately, as mentioned earlier, I had to write some custom functions to
+facilitate fitting a model for each split in the repeated k-crossfolds step. In
+addition, I had to create a custom `parsnip` model since `nls` isn't 
+a supported engine currently. So, there's a decent bit of code here to do
+all this.
+
+https://www.tidymodels.org/learn/develop/models/
+
+### Fit model on entire training set
+
+Just for fun, here's a single fit on the entire training dataset.
+
+
+```{r nls_wait_i}
+# Nonlinear models need starting guesses for the params
+init_nls_wait_i <- c(b1=.1, b2=-0.6, b3=2, b4=0.5, b5=2)
+
+# Fit the model
+nls_wait_i <- nls(mean_wait_i ~ b1 * (num_med_techs ^ b2) * (mean_wait_i_dm1 ^ b3) *
+                  (num_rooms ^ b4) * (staff_eff_svc_time_cv2 ^ b5),
+                  data=xy_q, start=init_nls_wait_i)
+
+# Check out the model terms
+summary(nls_wait_i)
+```
+
+The fitted model is
+
+$$
+W_I = 0.0163 \frac{W_{D}^{1.615}R^{0.515}C^{0.3710}}{S^{0.3501}}
+$$
+
+where
+
+-   $W_{D}$ is the mean wait in the approximating $D/M/1$ queue
+-   $R$ is the number of exam rooms
+-   $C$ is the coefficient of variation squared of an approximate effective service time distribution for staff (hyper-erlang)
+-   $S$ is the number medical technician staff
+
+One can view the $R$, $C$, and $S$ terms as adjustments to the $D/M/1$ based approximation that account for the assumptions of that queueing system that we have violated
+
+-   that it's a standalone queue (not part of a network),
+-   that the service time is exponential
+-   that there is a single server.
+
+See Slide 27 in the 2006 INFORMS presentation.
+
+Assess overall fit via an actual vs predicted plot.
+
+```{r nls_wait_i_plot}
+nls_wait_i_fitted <- predict(nls_wait_i, data=xy_q)
+nls_wait_i_df <- data.frame(mean_wait_i=xy_q$mean_wait_i, nls_wait_i_fitted)
+ggplot(nls_wait_i_df) + geom_point(aes(x=mean_wait_i, y=nls_wait_i_fitted)) + geom_abline(intercept=0, slope=1)
+ggsave('./initial_wait_fitted_vs_actual.png')
+```
+
+Very nice fit and only five parameters that have physical underpinnings that make sense in the context of queueing models.
+
+```{r rmse_nls_wait_i}
+rmse_vec(nls_wait_i_df$mean_wait_i, nls_wait_i_df$nls_wait_i_fitted)
+```
+
+Clearly the model is very promising. Let's run it through the cross-validation
+machinery I wrote so that we treat the nonlinear model just like the poly
+and spline models.
+
+### Fit queueing based nls model and use cross-validation
+
+In order to call the functions I wrote, I need the source the R script in
+which they live.
+
+```{r source_my_parsnip_resample}
+source('lib/parsnip_tps.R')
+```
+
+
+```{r nls_wf}
+# Create nonlinear_reg model object
+init_nls_wait_i <- c(b1=.1, b2=-0.6, b3=2, b4=0.5, b5=2)
+wait_i_nls_mod <- nonlinear_reg() %>% set_engine(engine = "nls", start = init_nls_wait_i)
+
+# Create the nonlinear formula
+wait_i_nls_mod_formula <- mean_wait_i ~ b1 * (num_med_techs ^ b2) * 
+  (mean_wait_i_dm1 ^ b3) *(num_rooms ^ b4) * (staff_eff_svc_time_cv2 ^ b5)
+
+# Call my custom function to fit the models for each split
+wait_i_kfold_res <- parsnip_fit_resamples(wait_i_nls_mod, wait_i_nls_mod_formula,
+                                          in_train_splits, kfold_number, kfold_repeats)
+
+```
+
+Now let's look at the metrics averaged over the 50 splits (10 repeats x 5 folds).
+Notice that there's a small standard error on the metrics indicating that 
+there's not a lot of variability between splits. This is good.
+
+Notice also that the RMSE value for this nonlinear model is better than both
+the spline and poly RMSE values.
+
+```{r collect_nls_metrics}
+tune:::collect_metrics.tune_results(wait_i_kfold_res, summarize = TRUE)
+```
+
+Now we'll refit one last model using the entire training set and assess its
+performance on the in design test data.
+
+```{r metrics_nls_last}
+# Do last fit
+wait_i_last_res <- parsnip_last_fit(wait_i_nls_mod, wait_i_nls_mod_formula, xy_q_in_split)
+
+tune:::collect_metrics.tune_results(wait_i_last_res$metrics_summary, summarize = FALSE)
+```
+
+Show the actual vs predicted plot based on the test data. This plot also
+shows that the queueing based model outperforms the poly and spline models.
+
+... and this model only has 5 parameters whereas the poly and spline models
+have many parameters (10 base inputs plus 10 quadratic terms for the poly model and
+the cubic spline has even more since it is fitting two cubic polynomials for the two
+regions of the spline defined by the single knot)
+
+```{r nls_plot}
+wait_i_last_res$act_vs_pred_plot
+```
+
+### Other performance measures
+
+I did some preliminary analysis on a few of the other performance measures such
+as wait time for the room, wait for the physician and total time in clinic.
+The results are very similar to what we see here for initial wait. Since this
+is the second case study, I think this is sufficient. 
+
+## Out of design analysis
+
+Now let's compare the models on their ability to extrapolate beyond the
+experimental design points.
+
+```{r metrics_poly_final_out}
+wait_i_poly_out_wflow <- 
+  workflow() %>% 
+  add_model(wait_i_poly_mod) %>% 
+  add_recipe(wait_i_poly_recipe)
+  
+wait_i_poly_out_fit <- fit(wait_i_poly_out_wflow, data = xy_q_in)
+wait_i_poly_out_pred <- predict(wait_i_poly_out_fit, new_data = xy_q_out)
+
+
+# Plot actual vs predicted.
+xy_q_out %>% 
+  select(mean_wait_i) %>% 
+  bind_cols(wait_i_poly_out_pred) %>%  
+  ggplot(aes(x = mean_wait_i, y = .pred)) + 
+  geom_point(alpha = .15) +
+  geom_abline(color = "red") + 
+  coord_obs_pred() + 
+  xlab("Actual mean initial wait time (min)") +
+  ylab("Metamodel prediction") +
+  ggtitle("Polynomial model - out of design extrapolation")
+
+wait_i_poly_out_rmse <- rmse_vec(xy_q_out$mean_wait_i, wait_i_poly_out_pred$.pred)
+sprintf("RMSE for poly model on out of design points: %10.3f", wait_i_poly_out_rmse)
+```
+
+```{r metrics_spline_final_out}
+wait_i_spline_out_wflow <- 
+  workflow() %>% 
+  add_model(wait_i_spline_mod) %>% 
+  add_recipe(wait_i_spline_recipe)
+  
+wait_i_spline_out_fit <- fit(wait_i_spline_out_wflow, data = xy_q_in)
+wait_i_spline_out_pred <- predict(wait_i_spline_out_fit, new_data = xy_q_out)
+
+
+# Plot actual vs predicted.
+xy_q_out %>% 
+  select(mean_wait_i) %>% 
+  bind_cols(wait_i_spline_out_pred) %>%  
+  ggplot(aes(x = mean_wait_i, y = .pred)) + 
+  geom_point(alpha = .15) +
+  geom_abline(color = "red") + 
+  coord_obs_pred() + 
+  xlab("Actual mean initial wait time (min)") +
+  ylab("Metamodel prediction") +
+  ggtitle("Spline model - out of design extrapolation")
+
+wait_i_spline_out_rmse <- rmse_vec(xy_q_out$mean_wait_i, wait_i_spline_out_pred$.pred)
+sprintf("RMSE for spline model on out of design points: %10.3f", wait_i_spline_out_rmse)
+```
+
+```{r metrics_nls_final_out}
+# Nonlinear models need starting guesses for the params
+init_nls_wait_i <- c(b1=.1, b2=-0.6, b3=2, b4=0.5, b5=2)
+
+# Fit the model
+wait_i_nls_out_fit <- nls(mean_wait_i ~ b1 * (num_med_techs ^ b2) * 
+  (mean_wait_i_dm1 ^ b3) *(num_rooms ^ b4) * (staff_eff_svc_time_cv2 ^ b5),
+                 data=xy_q_in, start=init_nls_wait_i)
+
+wait_i_nls_out_pred <- predict(wait_i_nls_out_fit, newdata = xy_q_out)
+
+
+xy_q_out %>% 
+  select(mean_wait_i) %>% 
+  bind_cols(wait_i_nls_out_pred) %>%  
+  ggplot(aes(x = mean_wait_i, y = wait_i_nls_out_pred)) + 
+  geom_point(alpha = .15) +
+  geom_abline(color = "red") + 
+  coord_obs_pred() + 
+  xlab("Actual mean initial wait time (min)") +
+  ylab("Metamodel prediction") +
+  ggtitle("Queueing based model - out of design extrapolation")
+
+wait_i_nls_out_rmse <- rmse_vec(xy_q_out$mean_wait_i, wait_i_nls_out_pred)
+sprintf("RMSE for nls model on out of design points: %10.3f", wait_i_nls_out_rmse)
+```
+
+## Key takeaways
+
+The bottom line is that:
+
+* we used a queueing inspired nonlinear model with only
+five parameters that outperformed poly and spline models with many more paramters in
+both in and out of design predictions (interpolation and extrapolation)
+* the nonlinear queueing based model made sense in the context of the underlying process physics of the simulation model - each term was interpretable and had basis in theory,
+* the queueing knowledge used in this case was based on a transient D/M/1 model which is **VERY** different than the steady state queueing knowledge used in the inpatient OB flow example
+* there is **NO** simple cookbook procedure to exploiting domain knowledge (queueing knowledge in this case). Each situation is different and the details of the feature engineering are
+going to be situational. It's unrealistic to expect more.
+
+
+
