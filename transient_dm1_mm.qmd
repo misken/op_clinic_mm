@@ -283,6 +283,86 @@ assess_wait_i_last_poly_res %>%
   ylab("Metamodel prediction") +
   ggtitle("Polynomial regression model")
 ```
+
+In reality, the model above represents a model that does contain some
+level of basic queueing inspired feature engineering in that the three
+utilization terms are includes. Let's see how the polynomial regression
+model does without those utilization terms - i.e. no queueing inspired features.
+
+```{r poly_noq}
+# Create a formula object. Later we'll use a recipe to generate the polynomial terms.
+wait_i_poly_mod_formula_noq <- mean_wait_i ~ patients_per_clinic_block + 
+                         num_med_techs +
+                         num_rooms + 
+                         vitals_time_mean +
+                         exam_time_mean +
+                         exam_time_cv2 + 
+                         post_exam_time_mean 
+
+# Now we'll create a recipe object that contains two steps - the formula and the 
+# polynomial transforms.
+# For step_poly(), the default of degree = 2 corresponds to using up to squared terms.
+# We'll allow polynomial terms for all of our relevant inputs.
+
+wait_i_poly_recipe_noq <- recipe(wait_i_poly_mod_formula, data = xy_q_in_train) %>% 
+  step_poly(patients_per_clinic_block, num_med_techs, num_rooms,
+          vitals_time_mean, exam_time_mean, exam_time_cv2, post_exam_time_mean,
+          degree = 2)
+
+# Now create a workflow object that uses the model and recipe above
+wait_i_poly_wflow_noq <- 
+  workflow() %>% 
+  add_model(wait_i_poly_mod) %>% 
+  add_recipe(wait_i_poly_recipe_noq)
+
+# Specify control options (earlier I was saving predicted values within the
+# resampling scheme but we don't need that now)
+keep_pred <- control_resamples(save_pred = FALSE, save_workflow = FALSE)
+
+# Pipe our workflow through tune::fit_resamples().
+wait_i_poly_res_noq <- 
+  wait_i_poly_wflow_noq %>% 
+  fit_resamples(resamples = in_train_splits, control = keep_pred)
+```
+
+Now let's look at the metrics averaged over the 50 splits (10 repeats x 5 folds).
+Notice that there's a small standard error on the metrics indicating that 
+there's not a lot of variability between splits. This is good. The `collect_metrics` function
+makes it easy to pull out and consolidate metrics. 
+
+```{r metrics_poly_kfold_noq}
+collect_metrics(wait_i_poly_res_noq)
+```
+
+Now we'll refit one last model using the entire training set and assess its
+performance on the in design test data. 
+
+```{r metrics_poly_last_noq}
+# Do last fit
+wait_i_last_poly_res_noq <- last_fit(wait_i_poly_wflow_noq, xy_q_in_split)
+
+collect_metrics(wait_i_last_poly_res_noq)
+```
+The RMSE on test is slightly smaller than RMSE on train which is unusual but
+can happen due to randomness.
+
+Plot the actual vs predicted on the in design test dataframe.
+
+```{r assess_wait_i_last_poly_res_noq}
+# Grab the predictions on the test data
+assess_wait_i_last_poly_res_noq <- collect_predictions(wait_i_last_poly_res_noq)
+
+# Plot actual vs predicted.
+assess_wait_i_last_poly_res_noq %>% 
+  ggplot(aes(x = mean_wait_i, y = .pred)) + 
+  geom_point(alpha = .15) +
+  geom_abline(color = "red") + 
+  coord_obs_pred() + 
+  xlab("Actual mean initial wait time (min)") +
+  ylab("Metamodel prediction") +
+  ggtitle("Polynomial regression model with no utilization terms")
+```
+
 Ok, that's the poly model. Let's do natural cubic spline next.
 
 ## Natural cubic spline regression model for initial wait
@@ -374,7 +454,79 @@ assess_wait_i_last_spline_res %>%
   ggtitle("Natural spline regression model")
 ```
 
+Here's the spline with no utilization terms.
 
+```{r spline_noq}
+# Create a formula object. Later we'll use a recipe to generate the splinenomial terms.
+wait_i_spline_mod_formula_noq <- mean_wait_i ~ patients_per_clinic_block + 
+                         num_med_techs +
+                         num_rooms + 
+                         vitals_time_mean +
+                         exam_time_mean +
+                         exam_time_cv2 + 
+                         post_exam_time_mean 
+
+# Now we'll create a recipe object that contains two steps - the formula and the 
+# splinenomial transforms.
+# For step_spline(), the default of degree = 2 corresponds to using up to squared terms.
+# We'll allow splinenomial terms for all of our relevant inputs.
+
+wait_i_spline_recipe_noq <- recipe(wait_i_spline_mod_formula, data = xy_q_in_train) %>% 
+  step_ns(patients_per_clinic_block, num_med_techs, num_rooms,
+          vitals_time_mean, exam_time_mean, exam_time_cv2, post_exam_time_mean,
+          deg_free = 2)
+
+# Now create a workflow object that uses the model and recipe above
+wait_i_spline_wflow_noq <- 
+  workflow() %>% 
+  add_model(wait_i_spline_mod) %>% 
+  add_recipe(wait_i_spline_recipe_noq)
+
+# Specify control options (earlier I was saving predicted values within the
+# resampling scheme but we don't need that now)
+keep_pred <- control_resamples(save_pred = FALSE, save_workflow = FALSE)
+
+# Pipe our workflow through tune::fit_resamples().
+wait_i_spline_res_noq <- 
+  wait_i_spline_wflow_noq %>% 
+  fit_resamples(resamples = in_train_splits, control = keep_pred)
+```
+
+Now let's look at the metrics averaged over the 50 splits (10 repeats x 5 folds).
+
+
+```{r metrics_spline_kfold_noq}
+collect_metrics(wait_i_spline_res_noq)
+```
+
+Now we'll refit one last model using the entire training set and assess its
+performance on the in design test data. 
+
+```{r metrics_spline_last_noq}
+# Do last fit
+wait_i_last_spline_res_noq <- last_fit(wait_i_spline_wflow_noq, xy_q_in_split)
+
+collect_metrics(wait_i_last_spline_res_noq)
+```
+The RMSE on test is slightly smaller than RMSE on train which is unusual but
+can happen due to randomness.
+
+Plot the actual vs predicted on the in design test dataframe.
+
+```{r assess_wait_i_last_spline_res_noq}
+# Grab the predictions on the test data
+assess_wait_i_last_spline_res_noq <- collect_predictions(wait_i_last_spline_res_noq)
+
+# Plot actual vs predicted.
+assess_wait_i_last_spline_res_noq %>% 
+  ggplot(aes(x = mean_wait_i, y = .pred)) + 
+  geom_point(alpha = .15) +
+  geom_abline(color = "red") + 
+  coord_obs_pred() + 
+  xlab("Actual mean initial wait time (min)") +
+  ylab("Metamodel prediction") +
+  ggtitle("Cubic spline regression model with no utilization terms")
+```
 
 ## Nonlinear queueing inspired model for initital wait
 
