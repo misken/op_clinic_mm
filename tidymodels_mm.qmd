@@ -789,17 +789,14 @@ and assess its predictive accuracy, I cannot use it in any workflow that uses
 to write our own function for iterating over our k-crossfold splits object and
 fitting and assessing models for each split.
 
-
-
-
-
 ### Fit queueing based nls model and use cross-validation
 
-In order to call the functions I wrote, I need the source the R script in
-which they live.
+I hacked together a few functions to do what `tune::fit_resamples()` does. They
+basically just loop through the splits doing model fitting, predicting, scoring
+and plotting.
 
 ```{r source_my_parsnip_resample}
-source('lib/parsnip_tps.R')
+source('lib/myparsnip_funcs.R')
 ```
 
 
@@ -813,39 +810,41 @@ wait_i_nls_mod_formula <- mean_wait_i ~ b1 * (num_med_techs ^ b2) *
   (mean_wait_i_dm1 ^ b3) *(num_rooms ^ b4) * (staff_eff_svc_time_cv2 ^ b5)
 
 # Call my custom function to fit the models for each split
-wait_i_kfold_res <- parsnip_fit_resamples(wait_i_nls_mod, wait_i_nls_mod_formula,
+wait_i_kfold_res <- myparsnip_fit_resamples(wait_i_nls_mod, wait_i_nls_mod_formula,
                                           in_train_splits, kfold_number, kfold_repeats)
 
 ```
 
 Now let's look at the metrics averaged over the 50 splits (10 repeats x 5 folds).
-Notice that there's a small standard error on the metrics indicating that 
-there's not a lot of variability between splits. This is good.
-
-Notice also that the RMSE value for this nonlinear model is better than both
-the spline and poly RMSE values.
+The standard error is small and the RMSE value for this nonlinear model is better than both
+the spline and poly RMSE values. While I attempted to have `myparsnip_fit_resamples()`
+return an object that I could pass directly to `tune::collect_metrics`, I
+couldn't quite get it to work even after digging into the source code and finding
+that `tune::collect_metrics` calls `UseMethod` and trying to coerce my function
+return value to be of the correct class so that the correct method would get
+dispatched. Then I realized I could just call the desired method even though
+it doesn't get exported into the namespace for `tune` by using the triple colon
+notation.
 
 ```{r collect_nls_metrics}
 tune:::collect_metrics.tune_results(wait_i_kfold_res, summarize = TRUE)
 ```
 
 Now we'll refit one last model using the entire training set and assess its
-performance on the in design test data.
+performance on the in design test data - again using a custom function.
 
 ```{r metrics_nls_last}
 # Do last fit
-wait_i_last_res <- parsnip_last_fit(wait_i_nls_mod, wait_i_nls_mod_formula, xy_q_in_split)
+wait_i_last_res <- myparsnip_last_fit(wait_i_nls_mod, wait_i_nls_mod_formula, xy_q_in_split)
 
 tune:::collect_metrics.tune_results(wait_i_last_res$metrics_summary, summarize = FALSE)
 ```
 
-Show the actual vs predicted plot based on the test data. This plot also
-shows that the queueing based model outperforms the poly and spline models.
-
-... and this model only has 5 parameters whereas the poly and spline models
+No we can check out the actual vs predicted plot based on the test data. This plot also
+shows that the queueing based model outperforms the poly and spline models... and this model only has 5 parameters whereas the poly and spline models
 have many parameters (10 base inputs plus 10 quadratic terms for the poly model and
 the cubic spline has even more since it is fitting two cubic polynomials for the two
-regions of the spline defined by the single knot)
+regions of the spline defined by the single knot).
 
 ```{r nls_plot}
 wait_i_last_res$act_vs_pred_plot
