@@ -570,7 +570,7 @@ estimate $b_1, ..., b_5$ using R's `nls()` function.
 
 It would be great if we could simply use similar code to what we did above
 for the polynomial and spline based regression models. Unfortunately, it's not
-that easy. To begin with, nonlinear regression, and in particular the`nls()`
+that easy. To begin with, nonlinear regression, and in particular the `nls()`
 engine isn't supported as of yet in [parsnip](https://parsnip.tidymodels.org/), the tidymodels package
 that handles model building. As I starting digging into (no pun intended) this package for
 the first time, I realized, of course, a "parsnip" is not a "carrot". The goal
@@ -587,15 +587,9 @@ models. They have a very nice tutorial on doing just that:
 * [How to build a parsnip model](https://www.tidymodels.org/learn/develop/models/)
 
 So, let's create our own `"nonlinear_reg"` model that relies on `nls()` as
-the model fitter. Since `nls()` needs a starting guess for the parameter values,
+the model fitting engine. Since `nls()` needs a starting guess for the parameter values,
 we need to figure out how and where such a starting guess fits into a 
 custom parsnip model.
-
-Our high level design:
-
--   Function name: `nonlinear_reg`
--   Mode: "regression"
--   Engine: "nls"
 
 I just followed the steps in the tutorial listed above.
 
@@ -618,7 +612,7 @@ show_model_info("nonlinear_reg")
 
 **Step 2. Create the model function**
 
-Now we declare the main arguments for the model. This is intended for turning parameters I think. 
+Now we declare the main arguments for the model. This is intended for turning parameters I think and isn't needed here. 
 
 ```{r}
 # set_model_arg(
@@ -632,6 +626,9 @@ Now we declare the main arguments for the model. This is intended for turning pa
 # )
 # show_model_info("nonlinear_reg")
 ```
+
+This next function creates the `new_model_spec` object needed to define our
+custom model.
 
 ```{r}
 nonlinear_reg <-
@@ -716,7 +713,8 @@ set_pred(
 )
 ```
 
-Now we have a custom model type named "nonlinear_reg" that we can use. Before
+Now we have a custom model type named "nonlinear_reg" that we can use just like
+(we hope) any built in parsnip model. Before
 trying to use with the full blown resampling scheme, let's just see if we can
 make it work for a simple fit, predict, and assess cycle. We'll just fit
 the model on the entire within design training set, `xy_q_in_train`.
@@ -739,15 +737,32 @@ wait_i_nls_fit
 
 Great. It works. We can make predictions and compute error metrics.
 
-```{r}
-predict(wait_i_nls_fit, new_data = xy_q_in_test) %>% 
-  head()
+```{r nls_wait_i_plot}
+wait_i_nls_predicted <- predict(wait_i_nls_fit, new_data = xy_q_in_test)
+
+wait_i_nls_rmse <- rmse_vec(xy_q_in_test$mean_wait_i, nls_wait_i_predicted$.pred)
+
+# Plot actual vs predicted.
+xy_q_in_test %>% 
+  select(mean_wait_i) %>% 
+  bind_cols(nls_wait_i_predicted) %>%  
+  ggplot(aes(x = mean_wait_i, y = .pred)) + 
+  geom_point(alpha = .15) +
+  geom_abline(color = "red") + 
+  coord_obs_pred() + 
+  xlab("Actual mean initial wait time (min)") +
+  ylab("Metamodel prediction") +
+  ggtitle("Nonlinear queueing based model") +
+  annotate("text", x = 10, y = 40, label = sprintf("RMSE = %8.3f", wait_i_nls_rmse))
+
 ```
 
-But, we really need to add the k-crossfold resampling just as we did with the
+Very nice fit and only five parameters that have physical underpinnings that make sense in the context of queueing models.
+
+To get a sense of the stability of the model, We really need to add the k-crossfold resampling just as we did with the
 polynomial and spline models. Before we try that, we can actually get a preview
-of the problem by tweaking the previous example to use a simple tidy workflow
-object. The model and formula objects are fine. Let's use them in a workflow.
+of the impending problem by tweaking the previous example to use a simple tidy workflow
+object. The model and formula objects are fine. Let's try to use them use them in a workflow.
 
 ```{r}
 # Create simple workflow
@@ -761,99 +776,22 @@ wait_i_nls_wf %>%
 
 ```
 
+And there's the problem. When `workflows::add_formula` is called, an internal
+checking of the proposed formula flags are formula as having an invalid power.
+No doubt this is because the powers in our formula are parameters to be
+estimated by `nls()`. This same problem also occurs if we try to use
+`fit_resample` as we did with the polynomial and spline models. 
 
-
-
-
-
-
-
-
-
-
-While
+To summarize what we just learned, While
 I was able to successfully use my custom "nonlinear_reg" model to fit a model
-and assess its predictive accuracy, the `fit_resamples()` function didn't
-like the fact that the model was nonlinear and refused to fit it for each of
-the data splits (even though I could manually fit it for any split). So,
-that's where I needed to write custom functions that looped through splits
-and did the model fitting.
+and assess its predictive accuracy, I cannot use it in any workflow that uses
+`add_formula` or `fit_resamples()` So, it appears that we are going to have
+to write our own function for iterating over our k-crossfold splits object and
+fitting and assessing models for each split.
 
 
-Unfortunately, for the nonlinear model which uses `nls()` as its fitting engine,
-I had to do write a bunch of custom code to handle some of the workflow steps as
-currently one of the `tidymodels` packages which does the resampling (a package
-called `tune`) doesn't support nonlinear models that contain powers that must
-be estimated. Nevertheless, I got it all working and did the RMSE and plot
-just as I did for the poly and spline models. The steps just look a little different.
-
-Note: I actually submitted an Issue to the `tune` repo on GitHub regarding this 
-problem - see https://github.com/tidymodels/tune/issues/534.
-Unfortunately, as mentioned earlier, I had to write some custom functions to
-facilitate fitting a model for each split in the repeated k-crossfolds step. In
-addition, I had to create a custom `parsnip` model since `nls` isn't 
-a supported engine currently. So, there's a decent bit of code here to do
-all this.
-
-https://www.tidymodels.org/learn/develop/models/
-
-### Fit model on entire training set
-
-Just for fun, here's a single fit on the entire training dataset.
 
 
-```{r nls_wait_i}
-# Nonlinear models need starting guesses for the params
-init_nls_wait_i <- c(b1=.1, b2=-0.6, b3=2, b4=0.5, b5=2)
-
-# Fit the model
-nls_wait_i <- nls(mean_wait_i ~ b1 * (num_med_techs ^ b2) * (mean_wait_i_dm1 ^ b3) *
-                  (num_rooms ^ b4) * (staff_eff_svc_time_cv2 ^ b5),
-                  data=xy_q, start=init_nls_wait_i)
-
-# Check out the model terms
-summary(nls_wait_i)
-```
-
-The fitted model is
-
-$$
-W_I = 0.0163 \frac{W_{D}^{1.615}R^{0.515}C^{0.3710}}{S^{0.3501}}
-$$
-
-where
-
--   $W_{D}$ is the mean wait in the approximating $D/M/1$ queue
--   $R$ is the number of exam rooms
--   $C$ is the coefficient of variation squared of an approximate effective service time distribution for staff (hyper-erlang)
--   $S$ is the number medical technician staff
-
-One can view the $R$, $C$, and $S$ terms as adjustments to the $D/M/1$ based approximation that account for the assumptions of that queueing system that we have violated
-
--   that it's a standalone queue (not part of a network),
--   that the service time is exponential
--   that there is a single server.
-
-See Slide 27 in the 2006 INFORMS presentation.
-
-Assess overall fit via an actual vs predicted plot.
-
-```{r nls_wait_i_plot}
-nls_wait_i_fitted <- predict(nls_wait_i, data=xy_q)
-nls_wait_i_df <- data.frame(mean_wait_i=xy_q$mean_wait_i, nls_wait_i_fitted)
-ggplot(nls_wait_i_df) + geom_point(aes(x=mean_wait_i, y=nls_wait_i_fitted)) + geom_abline(intercept=0, slope=1)
-ggsave('./initial_wait_fitted_vs_actual.png')
-```
-
-Very nice fit and only five parameters that have physical underpinnings that make sense in the context of queueing models.
-
-```{r rmse_nls_wait_i}
-rmse_vec(nls_wait_i_df$mean_wait_i, nls_wait_i_df$nls_wait_i_fitted)
-```
-
-Clearly the model is very promising. Let's run it through the cross-validation
-machinery I wrote so that we treat the nonlinear model just like the poly
-and spline models.
 
 ### Fit queueing based nls model and use cross-validation
 
