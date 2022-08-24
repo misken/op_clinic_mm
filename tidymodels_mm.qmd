@@ -14,6 +14,10 @@ library(MLmetrics)
 library(stringr)
 ```
 
+
+
+
+
 ## Background
 
 I've written a multipart blog series on using R to do simulation metamodeling. The
@@ -338,7 +342,7 @@ Let's plot the actual vs predicted values based on the in design test dataframe.
 The predictions on the test data based on the model fit by `last_fit` can be
 obtained by `tune::collect_predictions()`. 
 
-```{r assess_wait_i_last_poly_res}
+```{r assess_wait_i_last_poly_res, fig.height=7, fig.width=7}
 wait_i_last_poly_rmse <- collect_metrics(wait_i_last_poly_res) %>% 
   filter(.metric == 'rmse') %>% 
   pull(.estimate) 
@@ -409,7 +413,7 @@ collect_metrics(wait_i_poly_res_noq)
 Now we'll refit one last model using the entire training set and assess its
 performance on the in design test data. 
 
-```{r metrics_poly_last_noq}
+```{r metrics_poly_last_noq, fig.height=7, fig.width=7}
 # Do last fit
 wait_i_last_poly_res_noq <- last_fit(wait_i_poly_wflow_noq, xy_q_in_split)
 
@@ -498,7 +502,7 @@ collect_metrics(wait_i_last_spline_res)
 
 Plot the actual vs predicted on the in design test dataframe.
 
-```{r assess_wait_i_last_spline_res}
+```{r assess_wait_i_last_spline_res, fig.height=7, fig.width=7}
 # Grab the predictions on the test data
 assess_wait_i_last_spline_res <- collect_predictions(wait_i_last_spline_res)
 
@@ -737,7 +741,7 @@ wait_i_nls_fit
 
 Great. It works. We can make predictions and compute error metrics.
 
-```{r nls_wait_i_plot}
+```{r nls_wait_i_plot, fig.height=7, fig.width=7}
 wait_i_nls_predicted <- predict(wait_i_nls_fit, new_data = xy_q_in_test)
 
 wait_i_nls_rmse <- rmse_vec(xy_q_in_test$mean_wait_i, nls_wait_i_predicted$.pred)
@@ -764,7 +768,7 @@ polynomial and spline models. Before we try that, we can actually get a preview
 of the impending problem by tweaking the previous example to use a simple tidy workflow
 object. The model and formula objects are fine. Let's try to use them use them in a workflow.
 
-```{r}
+```{r show_error, error=TRUE}
 # Create simple workflow
 wait_i_nls_wf <- workflow() %>% 
   add_model(wait_i_nls_mod) %>% 
@@ -793,7 +797,8 @@ fitting and assessing models for each split.
 
 I hacked together a few functions to do what `tune::fit_resamples()` does. They
 basically just loop through the splits doing model fitting, predicting, scoring
-and plotting.
+and plotting. You can find the [source code here](https://github.com/misken/op_clinic_mm/blob/main/lib/myparsnip_funcs.R) within
+the GitHub repo for this project.
 
 ```{r source_my_parsnip_resample}
 source('lib/myparsnip_funcs.R')
@@ -819,7 +824,7 @@ Now let's look at the metrics averaged over the 50 splits (10 repeats x 5 folds)
 The standard error is small and the RMSE value for this nonlinear model is better than both
 the spline and poly RMSE values. While I attempted to have `myparsnip_fit_resamples()`
 return an object that I could pass directly to `tune::collect_metrics`, I
-couldn't quite get it to work even after digging into the source code and finding
+couldn't quite get it to work even after digging into the [source code](https://github.com/tidymodels/tune/blob/main/R/collect.R) and finding
 that `tune::collect_metrics` calls `UseMethod` and trying to coerce my function
 return value to be of the correct class so that the correct method would get
 dispatched. Then I realized I could just call the desired method even though
@@ -846,23 +851,95 @@ have many parameters (10 base inputs plus 10 quadratic terms for the poly model 
 the cubic spline has even more since it is fitting two cubic polynomials for the two
 regions of the spline defined by the single knot).
 
-```{r nls_plot}
+```{r nls_plot, fig.height=7, fig.width=7}
 wait_i_last_res$act_vs_pred_plot
 ```
 
-### Other performance measures
+## Random forest model
 
-I did some preliminary analysis on a few of the other performance measures such
-as wait time for the room, wait for the physician and total time in clinic.
-The results are very similar to what we see here for initial wait. Since this
-is the second case study, I think this is sufficient. 
+Let's try a completely different type of model - a random forest.
+
+```{r rf_wf}
+# Create an empty model object of the appropriate type. 
+wait_i_rf_mod <- rand_forest(mode = "regression") %>% 
+  set_engine(engine = "ranger")
+
+# Create a formula object. 
+wait_i_rf_mod_formula <- mean_wait_i ~ patients_per_clinic_block + 
+                         num_med_techs +
+                         num_rooms + 
+                         vitals_time_mean +
+                         exam_time_mean +
+                         exam_time_cv2 + 
+                         post_exam_time_mean + 
+                         off_util_staff + 
+                         off_util_room + 
+                         off_util_physician
+
+# Now we'll create recipe object that adds in the formula.
+wait_i_rf_recipe <- recipe(wait_i_rf_mod_formula, data = xy_q_in_train) 
+
+# Now create a workflow object that uses the model and recipe above
+wait_i_rf_wflow <- 
+  workflow() %>% 
+  add_model(wait_i_rf_mod) %>% 
+  add_recipe(wait_i_rf_recipe)
+
+# Specify control options 
+keep_pred <- control_resamples(save_pred = FALSE, save_workflow = FALSE)
+
+# Pipe our workflow through fit_resamples().
+wait_i_rf_res <- 
+  wait_i_rf_wflow %>% 
+  fit_resamples(resamples = in_train_splits, control = keep_pred)
+```
+
+Now let's look at the metrics averaged over the 50 splits (10 repeats x 5 folds).
+
+
+```{r metrics_rf_kfold}
+collect_metrics(wait_i_rf_res)
+```
+
+Well, the random forest beat all of the other models quite handily during
+crossfold validation.
+
+Now we'll refit one last model using the entire training set and assess its
+performance on the in design test data.
+
+```{r metrics_rf_last}
+# Do last fit
+wait_i_last_rf_res <- last_fit(wait_i_rf_wflow, xy_q_in_split)
+
+collect_metrics(wait_i_last_rf_res)
+```
+Again, RMSE on test is slightly smaller than RMSE on train which is unusual but
+can happen due to randomness. Clearly the random forest model fits the best.
+
+Plot the actual vs predicted on the in design test dataframe.
+
+```{r assess_wait_i_last_rf_res, fig.height=7, fig.width=7}
+# Grab the predictions on the test data
+assess_wait_i_last_rf_res <- collect_predictions(wait_i_last_rf_res)
+
+# Plot actual vs predicted.
+assess_wait_i_last_rf_res %>% 
+  ggplot(aes(x = mean_wait_i, y = .pred)) + 
+  geom_point(alpha = .15) +
+  geom_abline(color = "red") + 
+  coord_obs_pred() + 
+  xlab("Actual mean initial wait time (min)") +
+  ylab("Metamodel prediction") +
+  ggtitle("Random forest model")
+```
+
 
 ## Out of design analysis
 
 Now let's compare the models on their ability to extrapolate beyond the
 experimental design points.
 
-```{r metrics_poly_final_out}
+```{r metrics_poly_final_out, fig.height=7, fig.width=7}
 wait_i_poly_out_wflow <- 
   workflow() %>% 
   add_model(wait_i_poly_mod) %>% 
@@ -888,7 +965,7 @@ wait_i_poly_out_rmse <- rmse_vec(xy_q_out$mean_wait_i, wait_i_poly_out_pred$.pre
 sprintf("RMSE for poly model on out of design points: %10.3f", wait_i_poly_out_rmse)
 ```
 
-```{r metrics_spline_final_out}
+```{r metrics_spline_final_out, fig.height=7, fig.width=7}
 wait_i_spline_out_wflow <- 
   workflow() %>% 
   add_model(wait_i_spline_mod) %>% 
@@ -914,7 +991,7 @@ wait_i_spline_out_rmse <- rmse_vec(xy_q_out$mean_wait_i, wait_i_spline_out_pred$
 sprintf("RMSE for spline model on out of design points: %10.3f", wait_i_spline_out_rmse)
 ```
 
-```{r metrics_nls_final_out}
+```{r metrics_nls_final_out, fig.height=7, fig.width=7}
 # Nonlinear models need starting guesses for the params
 init_nls_wait_i <- c(b1=.1, b2=-0.6, b3=2, b4=0.5, b5=2)
 
@@ -946,11 +1023,10 @@ sprintf("RMSE for nls model on out of design points: %10.3f", wait_i_nls_out_rms
 The bottom line is that:
 
 * we used a queueing inspired nonlinear model with only
-five parameters that outperformed poly and spline models with many more paramters in
+five parameters that outperformed poly and spline models with many more parameters in
 both in and out of design predictions (interpolation and extrapolation)
-* the nonlinear queueing based model made sense in the context of the underlying process physics of the simulation model - each term was interpretable and had basis in theory,
-* the queueing knowledge used in this case was based on a transient D/M/1 model which is **VERY** different than the steady state queueing knowledge used in the inpatient OB flow example
-* there is **NO** simple cookbook procedure to exploiting domain knowledge (queueing knowledge in this case). Each situation is different and the details of the feature engineering are
+* the nonlinear queueing based model makes sense in the context of the underlying process physics of the simulation model - each term was interpretable and had basis in theory,
+* there is no simple cookbook procedure to exploiting domain knowledge (queueing knowledge in this case). Each situation is different and the details of the feature engineering are
 going to be situational. It's unrealistic to expect more.
 
 

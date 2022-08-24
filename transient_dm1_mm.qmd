@@ -269,7 +269,7 @@ can happen due to randomness.
 
 Plot the actual vs predicted on the in design test dataframe.
 
-```{r assess_wait_i_last_poly_res}
+```{r assess_wait_i_last_poly_res, fig.height=7, fig.width=7}
 # Grab the predictions on the test data
 assess_wait_i_last_poly_res <- collect_predictions(wait_i_last_poly_res)
 
@@ -348,7 +348,7 @@ can happen due to randomness.
 
 Plot the actual vs predicted on the in design test dataframe.
 
-```{r assess_wait_i_last_poly_res_noq}
+```{r assess_wait_i_last_poly_res_noq, fig.height=7, fig.width=7}
 # Grab the predictions on the test data
 assess_wait_i_last_poly_res_noq <- collect_predictions(wait_i_last_poly_res_noq)
 
@@ -439,7 +439,7 @@ collect_metrics(wait_i_last_spline_res)
 
 Plot the actual vs predicted on the in design test dataframe.
 
-```{r assess_wait_i_last_spline_res}
+```{r assess_wait_i_last_spline_res, fig.height=7, fig.width=7}
 # Grab the predictions on the test data
 assess_wait_i_last_spline_res <- collect_predictions(wait_i_last_spline_res)
 
@@ -513,7 +513,7 @@ can happen due to randomness.
 
 Plot the actual vs predicted on the in design test dataframe.
 
-```{r assess_wait_i_last_spline_res_noq}
+```{r assess_wait_i_last_spline_res_noq, fig.height=7, fig.width=7}
 # Grab the predictions on the test data
 assess_wait_i_last_spline_res_noq <- collect_predictions(wait_i_last_spline_res_noq)
 
@@ -721,12 +721,11 @@ and did the model fitting.
 Since we did random forest in case study 1, let's try it here.
 
 ```{r rf_wf}
-# Create an empty model object of the appropriate type. Since rf regression
-# is really just a linear regression model with some added features (powers of inputs) we can use the `lm` as the engine.
+# Create an empty model object of the appropriate type. 
 wait_i_rf_mod <- rand_forest(mode = "regression") %>% 
   set_engine(engine = "ranger")
 
-# Create a formula object. Later we'll use a recipe to generate the rf terms.
+# Create a formula object. 
 wait_i_rf_mod_formula <- mean_wait_i ~ patients_per_clinic_block + 
                          num_med_techs +
                          num_rooms + 
@@ -738,11 +737,7 @@ wait_i_rf_mod_formula <- mean_wait_i ~ patients_per_clinic_block +
                          off_util_room + 
                          off_util_physician
 
-# Now we'll create recipe object that contains two steps - the formula and the 
-# rfnomial transforms.
-# For step_rf(), the default of degree = 2 corresponds to using up to squared terms.
-# We'll allow rfnomial terms for all of our relevant inputs.
-
+# Create recipe that simply adds in the formula
 wait_i_rf_recipe <- recipe(wait_i_rf_mod_formula, data = xy_q_in_train) 
 
 # Now create a workflow object that uses the model and recipe above
@@ -751,8 +746,7 @@ wait_i_rf_wflow <-
   add_model(wait_i_rf_mod) %>% 
   add_recipe(wait_i_rf_recipe)
 
-# Specify control options (earlier I was saving predicted values within the
-# resampling scheme but we don't need that now)
+# Specify control options 
 keep_pred <- control_resamples(save_pred = FALSE, save_workflow = FALSE)
 
 # Pipe our workflow through fit_resamples().
@@ -782,7 +776,7 @@ can happen due to randomness.
 
 Plot the actual vs predicted on the in design test dataframe.
 
-```{r assess_wait_i_last_rf_res}
+```{r assess_wait_i_last_rf_res, fig.height=7, fig.width=7}
 # Grab the predictions on the test data
 assess_wait_i_last_rf_res <- collect_predictions(wait_i_last_rf_res)
 
@@ -794,7 +788,7 @@ assess_wait_i_last_rf_res %>%
   coord_obs_pred() + 
   xlab("Actual mean initial wait time (min)") +
   ylab("Metamodel prediction") +
-  ggtitle("rfnomial regression model")
+  ggtitle("Random forest model")
 ```
 
 In reality, the model above represents a model that does contain some
@@ -803,7 +797,7 @@ utilization terms are includes. Let's see how the random forest
 model does without those utilization terms - i.e. no queueing inspired features.
 
 ```{r rf_noq}
-# Create a formula object. Later we'll use a recipe to generate the rfnomial terms.
+# Create a formula object. 
 wait_i_rf_mod_formula_noq <- mean_wait_i ~ patients_per_clinic_block + 
                          num_med_techs +
                          num_rooms + 
@@ -812,11 +806,7 @@ wait_i_rf_mod_formula_noq <- mean_wait_i ~ patients_per_clinic_block +
                          exam_time_cv2 + 
                          post_exam_time_mean 
 
-# Now we'll create a recipe object that contains two steps - the formula and the 
-# rfnomial transforms.
-# For step_rf(), the default of degree = 2 corresponds to using up to squared terms.
-# We'll allow rfnomial terms for all of our relevant inputs.
-
+# Now we'll create a recipe object 
 wait_i_rf_recipe_noq <- recipe(wait_i_rf_mod_formula, data = xy_q_in_train)
 
 # Now create a workflow object that uses the model and recipe above
@@ -856,7 +846,7 @@ can happen due to randomness.
 
 Plot the actual vs predicted on the in design test dataframe.
 
-```{r assess_wait_i_last_rf_res_noq}
+```{r assess_wait_i_last_rf_res_noq, fig.height=7, fig.width=7}
 # Grab the predictions on the test data
 assess_wait_i_last_rf_res_noq <- collect_predictions(wait_i_last_rf_res_noq)
 
@@ -868,7 +858,7 @@ assess_wait_i_last_rf_res_noq %>%
   coord_obs_pred() + 
   xlab("Actual mean initial wait time (min)") +
   ylab("Metamodel prediction") +
-  ggtitle("rfnomial regression model with no utilization terms")
+  ggtitle("Random forest model with no utilization terms")
 ```
 
 
@@ -913,7 +903,7 @@ See Slide 27 in the 2006 INFORMS presentation.
 
 Assess overall fit via an actual vs predicted plot.
 
-```{r nls_wait_i_plot}
+```{r nls_wait_i_plot, fig.height=7, fig.width=7}
 nls_wait_i_fitted <- predict(nls_wait_i, data=xy_q)
 nls_wait_i_df <- data.frame(mean_wait_i=xy_q$mean_wait_i, nls_wait_i_fitted)
 ggplot(nls_wait_i_df) + geom_point(aes(x=mean_wait_i, y=nls_wait_i_fitted)) + geom_abline(intercept=0, slope=1)
@@ -932,7 +922,7 @@ and spline models.
 
 ### Fit queueing based nls model and use cross-validation
 
-In order to call the functions I wrote, I need the source the R script in
+In order to call the functions I wrote, I need to source the R script in
 which they live.
 
 ```{r source_my_parsnip_resample}
@@ -984,7 +974,7 @@ have many parameters (10 base inputs plus 10 quadratic terms for the poly model 
 the cubic spline has even more since it is fitting two cubic polynomials for the two
 regions of the spline defined by the single knot)
 
-```{r nls_plot}
+```{r nls_plot, fig.height=7, fig.width=7}
 wait_i_last_res$act_vs_pred_plot
 ```
 
@@ -1000,7 +990,7 @@ is the second case study, I think this is sufficient.
 Now let's compare the models on their ability to extrapolate beyond the
 experimental design points.
 
-```{r metrics_poly_final_out}
+```{r metrics_poly_final_out, fig.height=7, fig.width=7}
 wait_i_poly_out_wflow <- 
   workflow() %>% 
   add_model(wait_i_poly_mod) %>% 
@@ -1026,7 +1016,7 @@ wait_i_poly_out_rmse <- rmse_vec(xy_q_out$mean_wait_i, wait_i_poly_out_pred$.pre
 sprintf("RMSE for poly model on out of design points: %10.3f", wait_i_poly_out_rmse)
 ```
 
-```{r metrics_spline_final_out}
+```{r metrics_spline_final_out, fig.height=7, fig.width=7}
 wait_i_spline_out_wflow <- 
   workflow() %>% 
   add_model(wait_i_spline_mod) %>% 
@@ -1052,7 +1042,7 @@ wait_i_spline_out_rmse <- rmse_vec(xy_q_out$mean_wait_i, wait_i_spline_out_pred$
 sprintf("RMSE for spline model on out of design points: %10.3f", wait_i_spline_out_rmse)
 ```
 
-```{r metrics_nls_final_out}
+```{r metrics_nls_final_out, fig.height=7, fig.width=7}
 # Nonlinear models need starting guesses for the params
 init_nls_wait_i <- c(b1=.1, b2=-0.6, b3=2, b4=0.5, b5=2)
 
@@ -1080,7 +1070,7 @@ sprintf("RMSE for nls model on out of design points: %10.3f", wait_i_nls_out_rms
 ```
 
 
-```{r metrics_rf_final_out}
+```{r metrics_rf_final_out, fig.height=7, fig.width=7}
 wait_i_rf_out_wflow <- 
   workflow() %>% 
   add_model(wait_i_rf_mod) %>% 
@@ -1112,7 +1102,10 @@ The bottom line is that:
 
 * we used a queueing inspired nonlinear model with only
 five parameters that outperformed poly and spline models with many more paramters in
-both in and out of design predictions (interpolation and extrapolation)
+both in and out of design predictions (interpolation and extrapolation). The
+random forest model outperformed all three other techniques on the in design
+dataset but exhibited some systematic bias on the out of design dataset. Of course,
+the random forest model is a black box in comparison to the regression models.
 * the nonlinear queueing based model made sense in the context of the underlying process physics of the simulation model - each term was interpretable and had basis in theory,
 * the queueing knowledge used in this case was based on a transient D/M/1 model which is **VERY** different than the steady state queueing knowledge used in the inpatient OB flow example
 * there is **NO** simple cookbook procedure to exploiting domain knowledge (queueing knowledge in this case). Each situation is different and the details of the feature engineering are
