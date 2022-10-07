@@ -941,7 +941,14 @@ to see how just this single approximation does.
 
 
 ```{r wait_i_dm1}
-ggplot(xy_q_in) + geom_point(aes(x=mean_wait_i, y=mean_wait_i_dm1))
+ggplot(xy_q_in) + geom_point(aes(x=mean_wait_i, y=mean_wait_i_dm1), alpha = .15) + 
+  geom_abline(color = "red") + 
+  coord_obs_pred() + 
+  xlab("Actual mean initial wait time (min)") +
+  ylab("D/M/1 prediction") 
+
+ggsave('plots/raw_dm1.png')
+
 ```
 
 How does the raw DM1 approximation do?
@@ -1229,6 +1236,7 @@ regions of the spline defined by the single knot)
 
 ```{r nls_plot, fig.height=7, fig.width=7}
 wait_i_last_res$act_vs_pred_plot
+ggsave('plots/act_vs_pred_nls_dm1.png')
 ```
 
 ### Other performance measures
@@ -1244,13 +1252,30 @@ Now let's compare the models on their ability to extrapolate beyond the
 experimental design points.
 
 ```{r metrics_poly_final_out, fig.height=7, fig.width=7}
-wait_i_poly_out_wflow <- 
+wait_i_poly_out_wflow_noq <- 
+  workflow() %>% 
+  add_model(wait_i_poly_mod) %>% 
+  add_recipe(wait_i_poly_recipe_noq)
+
+wait_i_poly_out_wflow_bq <- 
   workflow() %>% 
   add_model(wait_i_poly_mod) %>% 
   add_recipe(wait_i_poly_recipe)
+
+wait_i_poly_out_wflow_q <- 
+  workflow() %>% 
+  add_model(wait_i_poly_mod) %>% 
+  add_recipe(wait_i_poly_recipe_q)
   
-wait_i_poly_out_fit <- fit(wait_i_poly_out_wflow, data = xy_q_in)
-wait_i_poly_out_pred <- predict(wait_i_poly_out_fit, new_data = xy_q_out)
+
+wait_i_poly_out_fit_noq <- fit(wait_i_poly_out_wflow_noq, data = xy_q_in)
+wait_i_poly_out_pred_noq <- predict(wait_i_poly_out_fit_noq, new_data = xy_q_out)
+
+wait_i_poly_out_fit_bq <- fit(wait_i_poly_out_wflow_bq, data = xy_q_in)
+wait_i_poly_out_pred_bq <- predict(wait_i_poly_out_fit_bq, new_data = xy_q_out)
+
+wait_i_poly_out_fit_q <- fit(wait_i_poly_out_wflow_q, data = xy_q_in)
+wait_i_poly_out_pred_q <- predict(wait_i_poly_out_fit_q, new_data = xy_q_out)
 
 
 # Plot actual vs predicted.
@@ -1265,18 +1290,40 @@ xy_q_out %>%
   ylab("Metamodel prediction") +
   ggtitle("Polynomial model - out of design extrapolation")
 
-wait_i_poly_out_rmse <- rmse_vec(xy_q_out$mean_wait_i, wait_i_poly_out_pred$.pred)
-sprintf("RMSE for poly model on out of design points: %10.3f", wait_i_poly_out_rmse)
+wait_i_poly_out_rmse_noq <- rmse_vec(xy_q_out$mean_wait_i, wait_i_poly_out_pred_noq$.pred)
+wait_i_poly_out_rmse_bq <- rmse_vec(xy_q_out$mean_wait_i, wait_i_poly_out_pred_bq$.pred)
+wait_i_poly_out_rmse_q <- rmse_vec(xy_q_out$mean_wait_i, wait_i_poly_out_pred_q$.pred)
+
+sprintf("RMSE for poly model on out of design points NQ: %10.3f", wait_i_poly_out_rmse_noq)
+sprintf("RMSE for poly model on out of design points BQ: %10.3f", wait_i_poly_out_rmse_bq)
+sprintf("RMSE for poly model on out of design points AQ: %10.3f", wait_i_poly_out_rmse_q)
 ```
 
 ```{r metrics_spline_final_out, fig.height=7, fig.width=7}
-wait_i_spline_out_wflow <- 
+wait_i_spline_out_wflow_noq <- 
+  workflow() %>% 
+  add_model(wait_i_spline_mod) %>% 
+  add_recipe(wait_i_spline_recipe_noq)
+
+wait_i_spline_out_wflow_bq <- 
   workflow() %>% 
   add_model(wait_i_spline_mod) %>% 
   add_recipe(wait_i_spline_recipe)
+
+wait_i_spline_out_wflow_q <- 
+  workflow() %>% 
+  add_model(wait_i_spline_mod) %>% 
+  add_recipe(wait_i_spline_recipe_q)
   
-wait_i_spline_out_fit <- fit(wait_i_spline_out_wflow, data = xy_q_in)
-wait_i_spline_out_pred <- predict(wait_i_spline_out_fit, new_data = xy_q_out)
+
+wait_i_spline_out_fit_noq <- fit(wait_i_spline_out_wflow_noq, data = xy_q_in)
+wait_i_spline_out_pred_noq <- predict(wait_i_spline_out_fit_noq, new_data = xy_q_out)
+
+wait_i_spline_out_fit_bq <- fit(wait_i_spline_out_wflow_bq, data = xy_q_in)
+wait_i_spline_out_pred_bq <- predict(wait_i_spline_out_fit_bq, new_data = xy_q_out)
+
+wait_i_spline_out_fit_q <- fit(wait_i_spline_out_wflow_q, data = xy_q_in)
+wait_i_spline_out_pred_q <- predict(wait_i_spline_out_fit_q, new_data = xy_q_out)
 
 
 # Plot actual vs predicted.
@@ -1291,8 +1338,64 @@ xy_q_out %>%
   ylab("Metamodel prediction") +
   ggtitle("Spline model - out of design extrapolation")
 
-wait_i_spline_out_rmse <- rmse_vec(xy_q_out$mean_wait_i, wait_i_spline_out_pred$.pred)
-sprintf("RMSE for spline model on out of design points: %10.3f", wait_i_spline_out_rmse)
+wait_i_spline_out_rmse_noq <- rmse_vec(xy_q_out$mean_wait_i, wait_i_spline_out_pred_noq$.pred)
+wait_i_spline_out_rmse_bq <- rmse_vec(xy_q_out$mean_wait_i, wait_i_spline_out_pred_bq$.pred)
+wait_i_spline_out_rmse_q <- rmse_vec(xy_q_out$mean_wait_i, wait_i_spline_out_pred_q$.pred)
+
+sprintf("RMSE for spline model on out of design points NQ: %10.3f", wait_i_spline_out_rmse_noq)
+sprintf("RMSE for spline model on out of design points BQ: %10.3f", wait_i_spline_out_rmse_bq)
+sprintf("RMSE for spline model on out of design points AQ: %10.3f", wait_i_spline_out_rmse_q)
+```
+
+
+
+
+```{r metrics_rf_final_out, fig.height=7, fig.width=7}
+wait_i_rf_out_wflow_noq <- 
+  workflow() %>% 
+  add_model(wait_i_rf_mod) %>% 
+  add_recipe(wait_i_rf_recipe_noq)
+
+wait_i_rf_out_wflow_bq <- 
+  workflow() %>% 
+  add_model(wait_i_rf_mod) %>% 
+  add_recipe(wait_i_rf_recipe)
+
+wait_i_rf_out_wflow_q <- 
+  workflow() %>% 
+  add_model(wait_i_rf_mod) %>% 
+  add_recipe(wait_i_rf_recipe_q)
+
+wait_i_rf_out_fit_noq <- fit(wait_i_rf_out_wflow_noq, data = xy_q_in)
+wait_i_rf_out_pred_noq <- predict(wait_i_rf_out_fit_noq, new_data = xy_q_out)
+
+wait_i_rf_out_fit_bq <- fit(wait_i_rf_out_wflow_bq, data = xy_q_in)
+wait_i_rf_out_pred_bq <- predict(wait_i_rf_out_fit_bq, new_data = xy_q_out)
+
+wait_i_rf_out_fit_q <- fit(wait_i_rf_out_wflow_q, data = xy_q_in)
+wait_i_rf_out_pred_q <- predict(wait_i_rf_out_fit_q, new_data = xy_q_out)
+
+
+
+# Plot actual vs predicted.
+xy_q_out %>% 
+  select(mean_wait_i) %>% 
+  bind_cols(wait_i_rf_out_pred) %>%  
+  ggplot(aes(x = mean_wait_i, y = .pred)) + 
+  geom_point(alpha = .15) +
+  geom_abline(color = "red") + 
+  coord_obs_pred() + 
+  xlab("Actual mean initial wait time (min)") +
+  ylab("Metamodel prediction") +
+  ggtitle("Random forest model - out of design extrapolation")
+
+wait_i_rf_out_rmse_noq <- rmse_vec(xy_q_out$mean_wait_i, wait_i_rf_out_pred_noq$.pred)
+wait_i_rf_out_rmse_bq <- rmse_vec(xy_q_out$mean_wait_i, wait_i_rf_out_pred_bq$.pred)
+wait_i_rf_out_rmse_q <- rmse_vec(xy_q_out$mean_wait_i, wait_i_rf_out_pred_q$.pred)
+
+sprintf("RMSE for rf model on out of design points NQ: %10.3f", wait_i_rf_out_rmse_noq)
+sprintf("RMSE for rf model on out of design points BQ: %10.3f", wait_i_rf_out_rmse_bq)
+sprintf("RMSE for rf model on out of design points AQ: %10.3f", wait_i_rf_out_rmse_q)
 ```
 
 ```{r metrics_nls_final_out, fig.height=7, fig.width=7}
@@ -1320,33 +1423,6 @@ xy_q_out %>%
 
 wait_i_nls_out_rmse <- rmse_vec(xy_q_out$mean_wait_i, wait_i_nls_out_pred)
 sprintf("RMSE for nls model on out of design points: %10.3f", wait_i_nls_out_rmse)
-```
-
-
-```{r metrics_rf_final_out, fig.height=7, fig.width=7}
-wait_i_rf_out_wflow <- 
-  workflow() %>% 
-  add_model(wait_i_rf_mod) %>% 
-  add_recipe(wait_i_rf_recipe)
-  
-wait_i_rf_out_fit <- fit(wait_i_rf_out_wflow, data = xy_q_in)
-wait_i_rf_out_pred <- predict(wait_i_rf_out_fit, new_data = xy_q_out)
-
-
-# Plot actual vs predicted.
-xy_q_out %>% 
-  select(mean_wait_i) %>% 
-  bind_cols(wait_i_rf_out_pred) %>%  
-  ggplot(aes(x = mean_wait_i, y = .pred)) + 
-  geom_point(alpha = .15) +
-  geom_abline(color = "red") + 
-  coord_obs_pred() + 
-  xlab("Actual mean initial wait time (min)") +
-  ylab("Metamodel prediction") +
-  ggtitle("Random forest model - out of design extrapolation")
-
-wait_i_rf_out_rmse <- rmse_vec(xy_q_out$mean_wait_i, wait_i_rf_out_pred$.pred)
-sprintf("RMSE for random forest model on out of design points: %10.3f", wait_i_rf_out_rmse)
 ```
 
 ## Key takeaways
