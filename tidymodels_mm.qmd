@@ -1023,11 +1023,16 @@ sprintf("RMSE for nls model on out of design points: %10.3f", wait_i_nls_out_rms
 The bottom line is that:
 
 * we used a queueing inspired nonlinear model with only
-five parameters that outperformed poly and spline models with many more parameters in
-both in and out of design predictions (interpolation and extrapolation)
-* the nonlinear queueing based model makes sense in the context of the underlying process physics of the simulation model - each term was interpretable and had basis in theory,
+five parameters that outperformed poly and spline models with many more paramters in
+both in and out of design predictions (interpolation and extrapolation). The
+random forest model outperformed all three other techniques on the in design
+dataset but exhibited some systematic bias on the out of design dataset. Of course,
+the random forest model is a black box in comparison to the regression models.
+* the nonlinear queueing based model made sense in the context of the underlying process physics of the simulation model - each term was interpretable and had basis in theory,
 * there is no simple cookbook procedure to exploiting domain knowledge (queueing knowledge in this case). Each situation is different and the details of the feature engineering are
 going to be situational. It's unrealistic to expect more.
+* offered load and resource utilization based features are often simple to develop
+and can be quite predictive.
 
 
 

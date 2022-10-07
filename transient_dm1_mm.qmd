@@ -74,13 +74,14 @@ nonlinear model.
 What I decided to do was to just focus on one of the performance measures - initial
 wait time for patient to get staff to begin the clinic care process.
 
-For this performance measure, I fit three different metamodels:
+For this performance measure, I fit four different metamodels:
 
 * a nonlinear multiplicative power model based on queueing inspired features
 * a polynomial regression model
 * a natural cubic spline regression model
+* a random forest
 
-For the polynomial and spline models, I was able to use the `tidymodels` package
+For the polynomial, random forest and spline models, I was able to use the `tidymodels` package
 to create workflows that made it easy to fit a model using repeated k-crossfold resampling
 and then compute RMSE and an actual vs predicted plot for each model based on
 test data.
@@ -304,7 +305,7 @@ wait_i_poly_mod_formula_noq <- mean_wait_i ~ patients_per_clinic_block +
 # For step_poly(), the default of degree = 2 corresponds to using up to squared terms.
 # We'll allow polynomial terms for all of our relevant inputs.
 
-wait_i_poly_recipe_noq <- recipe(wait_i_poly_mod_formula, data = xy_q_in_train) %>% 
+wait_i_poly_recipe_noq <- recipe(wait_i_poly_mod_formula_noq, data = xy_q_in_train) %>% 
   step_poly(patients_per_clinic_block, num_med_techs, num_rooms,
           vitals_time_mean, exam_time_mean, exam_time_cv2, post_exam_time_mean,
           degree = 2)
@@ -362,6 +363,94 @@ assess_wait_i_last_poly_res_noq %>%
   ylab("Metamodel prediction") +
   ggtitle("Polynomial regression model with no utilization terms")
 ```
+
+Here is poly that also includes the DM1 term.
+
+```{r poly_wf_q}
+# Create an empty model object of the appropriate type. Since poly regression
+# is really just a linear regression model with some added features (powers of inputs) we can use the `lm` as the engine.
+wait_i_poly_mod_q <- linear_reg(mode = "regression") %>% 
+  set_engine(engine = "lm")
+
+# Create a formula object. Later we'll use a recipe to generate the poly terms.
+wait_i_poly_mod_q_formula <- mean_wait_i ~ patients_per_clinic_block + 
+                         num_med_techs +
+                         num_rooms + 
+                         vitals_time_mean +
+                         exam_time_mean +
+                         exam_time_cv2 + 
+                         post_exam_time_mean + 
+                         off_util_staff + 
+                         off_util_room + 
+                         off_util_physician +
+                         mean_wait_i_dm1
+
+# Now we'll create recipe object that contains two steps - the formula and the 
+# polynomial transforms.
+# For step_poly(), the default of degree = 2 corresponds to using up to squared terms.
+# We'll allow polynomial terms for all of our relevant inputs.
+
+wait_i_poly_recipe_q <- recipe(wait_i_poly_mod_q_formula, data = xy_q_in_train) %>% 
+  step_poly(patients_per_clinic_block, num_med_techs, num_rooms,
+          vitals_time_mean, exam_time_mean, exam_time_cv2, post_exam_time_mean,
+          off_util_staff, off_util_room, off_util_physician, mean_wait_i_dm1,
+          degree = 2)
+
+# Now create a workflow object that uses the model and recipe above
+wait_i_poly_wflow_q <- 
+  workflow() %>% 
+  add_model(wait_i_poly_mod_q) %>% 
+  add_recipe(wait_i_poly_recipe_q)
+
+# Specify control options (earlier I was saving predicted values within the
+# resampling scheme but we don't need that now)
+keep_pred <- control_resamples(save_pred = FALSE, save_workflow = FALSE)
+
+# Pipe our workflow through fit_resamples().
+wait_i_poly_res_q <- 
+  wait_i_poly_wflow_q %>% 
+  fit_resamples(resamples = in_train_splits, control = keep_pred)
+```
+
+Now let's look at the metrics averaged over the 50 splits (10 repeats x 5 folds).
+Notice that there's a small standard error on the metrics indicating that 
+there's not a lot of variability between splits. This is good.
+
+```{r metrics_poly_kfold_q}
+collect_metrics(wait_i_poly_res_q)
+```
+
+Now we'll refit one last model using the entire training set and assess its
+performance on the in design test data.
+
+```{r metrics_poly_last_q}
+# Do last fit
+wait_i_last_poly_res_q <- last_fit(wait_i_poly_wflow_q, xy_q_in_split)
+
+collect_metrics(wait_i_last_poly_res_q)
+```
+The RMSE on test is slightly smaller than RMSE on train which is unusual but
+can happen due to randomness.
+
+Plot the actual vs predicted on the in design test dataframe.
+
+```{r assess_wait_i_last_poly_res_q, fig.height=7, fig.width=7}
+# Grab the predictions on the test data
+assess_wait_i_last_poly_res_q <- collect_predictions(wait_i_last_poly_res_q)
+
+# Plot actual vs predicted.
+assess_wait_i_last_poly_res_q %>% 
+  ggplot(aes(x = mean_wait_i, y = .pred)) + 
+  geom_point(alpha = .15) +
+  geom_abline(color = "red") + 
+  coord_obs_pred() + 
+  xlab("Actual mean initial wait time (min)") +
+  ylab("Metamodel prediction") +
+  ggtitle("Polynomial regression model (Q)")
+```
+
+
+
 
 Ok, that's the poly model. Let's do natural cubic spline next.
 
@@ -471,7 +560,7 @@ wait_i_spline_mod_formula_noq <- mean_wait_i ~ patients_per_clinic_block +
 # For step_spline(), the default of degree = 2 corresponds to using up to squared terms.
 # We'll allow splinenomial terms for all of our relevant inputs.
 
-wait_i_spline_recipe_noq <- recipe(wait_i_spline_mod_formula, data = xy_q_in_train) %>% 
+wait_i_spline_recipe_noq <- recipe(wait_i_spline_mod_formula_noq, data = xy_q_in_train) %>% 
   step_ns(patients_per_clinic_block, num_med_techs, num_rooms,
           vitals_time_mean, exam_time_mean, exam_time_cv2, post_exam_time_mean,
           deg_free = 2)
@@ -527,6 +616,316 @@ assess_wait_i_last_spline_res_noq %>%
   ylab("Metamodel prediction") +
   ggtitle("Cubic spline regression model with no utilization terms")
 ```
+
+And here's spline with the DM1 term included
+
+```{r spline_wf_q}
+# Create an empty model object of the appropriate type. Since spline regression
+# is really just a linear regression model with some added features (the spline related stuff) we can use the `lm` as the engine.
+wait_i_spline_mod_q <- linear_reg(mode = "regression") %>% 
+  set_engine(engine = "lm")
+
+# Create a formula object. Later we'll use a recipe to generate the spline terms.
+wait_i_spline_mod_q_formula <- mean_wait_i ~ patients_per_clinic_block + 
+                         num_med_techs +
+                         num_rooms + 
+                         vitals_time_mean +
+                         exam_time_mean +
+                         exam_time_cv2 + 
+                         post_exam_time_mean + 
+                         off_util_staff + 
+                         off_util_room + 
+                         off_util_physician +
+                         mean_wait_i_dm1
+
+# Now we'll create recipe object that contains two steps - the formula and the 
+# natural spline transforms.
+# For step_spline(), the default of deg_free = 2 corresponds to a natural cubic spline with
+# one knot. This is appropriate as no reason to expect non-monotonic behavior of y for any 
+# of the X variables.
+# We'll allow spline terms for all of our relevant inputs.
+
+wait_i_spline_recipe_q <- recipe(wait_i_spline_mod_q_formula, data = xy_q_in_train) %>% 
+  step_ns(patients_per_clinic_block, num_med_techs, num_rooms,
+          vitals_time_mean, exam_time_mean, exam_time_cv2, post_exam_time_mean,
+          off_util_staff, off_util_room, off_util_physician, mean_wait_i_dm1,
+          deg_free = 2)
+
+# Now create a workflow object that uses the model and recipe above
+wait_i_spline_wflow_q <- 
+  workflow() %>% 
+  add_model(wait_i_spline_mod_q) %>% 
+  add_recipe(wait_i_spline_recipe_q)
+
+# Specify control options (earlier I was saving predicted values within the
+# resampling scheme but we don't need that now)
+keep_pred <- control_resamples(save_pred = FALSE, save_workflow = FALSE)
+
+# Pipe our workflow through fit_resamples().
+wait_i_spline_res_q <- 
+  wait_i_spline_wflow_q %>% 
+  fit_resamples(resamples = in_train_splits, control = keep_pred)
+```
+
+Now let's look at the metrics averaged over the 50 splits (10 repeats x 5 folds).
+Notice that there's a small standard error on the metrics indicating that 
+there's not a lot of variability between splits. This is good.
+
+```{r metrics_spline_kfold_q}
+collect_metrics(wait_i_spline_res_q)
+```
+
+Now we'll refit one last model using the entire training set and assess its
+performance on the in design test data.
+
+```{r metrics_spline_last_q}
+# Do last fit
+wait_i_last_spline_res_q <- last_fit(wait_i_spline_wflow_q, xy_q_in_split)
+
+collect_metrics(wait_i_last_spline_res_q)
+```
+
+
+Plot the actual vs predicted on the in design test dataframe.
+
+```{r assess_wait_i_last_spline_res_q, fig.height=7, fig.width=7}
+# Grab the predictions on the test data
+assess_wait_i_last_spline_res_q <- collect_predictions(wait_i_last_spline_res_q)
+
+# Plot actual vs predicted.
+assess_wait_i_last_spline_res_q %>% 
+  ggplot(aes(x = mean_wait_i, y = .pred)) + 
+  geom_point(alpha = .15) +
+  geom_abline(color = "red") + 
+  coord_obs_pred() + 
+  xlab("Actual mean initial wait time (min)") +
+  ylab("Metamodel prediction") +
+  ggtitle("Natural spline regression model (Q)")
+```
+
+
+
+
+## Random forest model for initial wait
+
+Since we did random forest in case study 1, let's try it here.
+
+```{r rf_wf}
+# Create an empty model object of the appropriate type. 
+wait_i_rf_mod <- rand_forest(mode = "regression") %>% 
+  set_engine(engine = "ranger")
+
+# Create a formula object. 
+wait_i_rf_mod_formula <- mean_wait_i ~ patients_per_clinic_block + 
+                         num_med_techs +
+                         num_rooms + 
+                         vitals_time_mean +
+                         exam_time_mean +
+                         exam_time_cv2 + 
+                         post_exam_time_mean + 
+                         off_util_staff + 
+                         off_util_room + 
+                         off_util_physician
+
+# Create recipe that simply adds in the formula
+wait_i_rf_recipe <- recipe(wait_i_rf_mod_formula, data = xy_q_in_train) 
+
+# Now create a workflow object that uses the model and recipe above
+wait_i_rf_wflow <- 
+  workflow() %>% 
+  add_model(wait_i_rf_mod) %>% 
+  add_recipe(wait_i_rf_recipe)
+
+# Specify control options 
+keep_pred <- control_resamples(save_pred = FALSE, save_workflow = FALSE)
+
+# Pipe our workflow through fit_resamples().
+wait_i_rf_res <- 
+  wait_i_rf_wflow %>% 
+  fit_resamples(resamples = in_train_splits, control = keep_pred)
+```
+
+Now let's look at the metrics averaged over the 50 splits (10 repeats x 5 folds).
+
+
+```{r metrics_rf_kfold}
+collect_metrics(wait_i_rf_res)
+```
+
+Now we'll refit one last model using the entire training set and assess its
+performance on the in design test data.
+
+```{r metrics_rf_last}
+# Do last fit
+wait_i_last_rf_res <- last_fit(wait_i_rf_wflow, xy_q_in_split)
+
+collect_metrics(wait_i_last_rf_res)
+```
+The RMSE on test is slightly smaller than RMSE on train which is unusual but
+can happen due to randomness.
+
+Plot the actual vs predicted on the in design test dataframe.
+
+```{r assess_wait_i_last_rf_res, fig.height=7, fig.width=7}
+# Grab the predictions on the test data
+assess_wait_i_last_rf_res <- collect_predictions(wait_i_last_rf_res)
+
+# Plot actual vs predicted.
+assess_wait_i_last_rf_res %>% 
+  ggplot(aes(x = mean_wait_i, y = .pred)) + 
+  geom_point(alpha = .15) +
+  geom_abline(color = "red") + 
+  coord_obs_pred() + 
+  xlab("Actual mean initial wait time (min)") +
+  ylab("Metamodel prediction") +
+  ggtitle("Random forest model")
+```
+
+In reality, the model above represents a model that does contain some
+level of basic queueing inspired feature engineering in that the three
+utilization terms are includes. Let's see how the random forest
+model does without those utilization terms - i.e. no queueing inspired features.
+
+```{r rf_noq}
+# Create a formula object. 
+wait_i_rf_mod_formula_noq <- mean_wait_i ~ patients_per_clinic_block + 
+                         num_med_techs +
+                         num_rooms + 
+                         vitals_time_mean +
+                         exam_time_mean +
+                         exam_time_cv2 + 
+                         post_exam_time_mean 
+
+# Now we'll create a recipe object 
+wait_i_rf_recipe_noq <- recipe(wait_i_rf_mod_formula_noq, data = xy_q_in_train)
+
+# Now create a workflow object that uses the model and recipe above
+wait_i_rf_wflow_noq <- 
+  workflow() %>% 
+  add_model(wait_i_rf_mod) %>% 
+  add_recipe(wait_i_rf_recipe_noq)
+
+# Specify control options (earlier I was saving predicted values within the
+# resampling scheme but we don't need that now)
+keep_pred <- control_resamples(save_pred = FALSE, save_workflow = FALSE)
+
+# Pipe our workflow through tune::fit_resamples().
+wait_i_rf_res_noq <- 
+  wait_i_rf_wflow_noq %>% 
+  fit_resamples(resamples = in_train_splits, control = keep_pred)
+```
+
+Now let's look at the metrics averaged over the 50 splits (10 repeats x 5 folds).
+
+
+```{r metrics_rf_kfold_noq}
+collect_metrics(wait_i_rf_res_noq)
+```
+
+Now we'll refit one last model using the entire training set and assess its
+performance on the in design test data. 
+
+```{r metrics_rf_last_noq}
+# Do last fit
+wait_i_last_rf_res_noq <- last_fit(wait_i_rf_wflow_noq, xy_q_in_split)
+
+collect_metrics(wait_i_last_rf_res_noq)
+```
+The RMSE on test is slightly smaller than RMSE on train which is unusual but
+can happen due to randomness.
+
+Plot the actual vs predicted on the in design test dataframe.
+
+```{r assess_wait_i_last_rf_res_noq, fig.height=7, fig.width=7}
+# Grab the predictions on the test data
+assess_wait_i_last_rf_res_noq <- collect_predictions(wait_i_last_rf_res_noq)
+
+# Plot actual vs predicted.
+assess_wait_i_last_rf_res_noq %>% 
+  ggplot(aes(x = mean_wait_i, y = .pred)) + 
+  geom_point(alpha = .15) +
+  geom_abline(color = "red") + 
+  coord_obs_pred() + 
+  xlab("Actual mean initial wait time (min)") +
+  ylab("Metamodel prediction") +
+  ggtitle("Random forest model with no utilization terms")
+```
+
+
+Here is random forest with util terms and the D/M/1 term
+
+```{r rf_wf_q}
+# Create an empty model object of the appropriate type. 
+wait_i_rf_mod_q <- rand_forest(mode = "regression") %>% 
+  set_engine(engine = "ranger")
+
+# Create a formula object. 
+wait_i_rf_mod_q_formula <- mean_wait_i ~ patients_per_clinic_block + 
+                         num_med_techs +
+                         num_rooms + 
+                         vitals_time_mean +
+                         exam_time_mean +
+                         exam_time_cv2 + 
+                         post_exam_time_mean + 
+                         off_util_staff + 
+                         off_util_room + 
+                         off_util_physician +
+                         mean_wait_i_dm1
+
+# Create recipe that simply adds in the formula
+wait_i_rf_recipe_q <- recipe(wait_i_rf_mod_q_formula, data = xy_q_in_train) 
+
+# Now create a workflow object that uses the model and recipe above
+wait_i_rf_wflow_q <- 
+  workflow() %>% 
+  add_model(wait_i_rf_mod_q) %>% 
+  add_recipe(wait_i_rf_recipe_q)
+
+# Specify control options 
+keep_pred <- control_resamples(save_pred = FALSE, save_workflow = FALSE)
+
+# Pipe our workflow through fit_resamples().
+wait_i_rf_res_q <- 
+  wait_i_rf_wflow_q %>% 
+  fit_resamples(resamples = in_train_splits, control = keep_pred)
+```
+
+Now let's look at the metrics averaged over the 50 splits (10 repeats x 5 folds).
+
+
+```{r metrics_rf_kfold}
+collect_metrics(wait_i_rf_res_q)
+```
+
+Now we'll refit one last model using the entire training set and assess its
+performance on the in design test data.
+
+```{r metrics_rf_last_q}
+# Do last fit
+wait_i_last_rf_res_q <- last_fit(wait_i_rf_wflow_q, xy_q_in_split)
+
+collect_metrics(wait_i_last_rf_res_q)
+```
+The RMSE on test is slightly smaller than RMSE on train which is unusual but
+can happen due to randomness.
+
+Plot the actual vs predicted on the in design test dataframe.
+
+```{r assess_wait_i_last_rf_res_q, fig.height=7, fig.width=7}
+# Grab the predictions on the test data
+assess_wait_i_last_rf_res_q <- collect_predictions(wait_i_last_rf_res_q)
+
+# Plot actual vs predicted.
+assess_wait_i_last_rf_res_q %>% 
+  ggplot(aes(x = mean_wait_i, y = .pred)) + 
+  geom_point(alpha = .15) +
+  geom_abline(color = "red") + 
+  coord_obs_pred() + 
+  xlab("Actual mean initial wait time (min)") +
+  ylab("Metamodel prediction") +
+  ggtitle("Random forest model (Q)")
+```
+
 
 ## Nonlinear queueing inspired model for initital wait
 
@@ -716,152 +1115,6 @@ the data splits (even though I could manually fit it for any split). So,
 that's where I needed to write custom functions that looped through splits
 and did the model fitting.
 
-## Random forest model for initial wait
-
-Since we did random forest in case study 1, let's try it here.
-
-```{r rf_wf}
-# Create an empty model object of the appropriate type. 
-wait_i_rf_mod <- rand_forest(mode = "regression") %>% 
-  set_engine(engine = "ranger")
-
-# Create a formula object. 
-wait_i_rf_mod_formula <- mean_wait_i ~ patients_per_clinic_block + 
-                         num_med_techs +
-                         num_rooms + 
-                         vitals_time_mean +
-                         exam_time_mean +
-                         exam_time_cv2 + 
-                         post_exam_time_mean + 
-                         off_util_staff + 
-                         off_util_room + 
-                         off_util_physician
-
-# Create recipe that simply adds in the formula
-wait_i_rf_recipe <- recipe(wait_i_rf_mod_formula, data = xy_q_in_train) 
-
-# Now create a workflow object that uses the model and recipe above
-wait_i_rf_wflow <- 
-  workflow() %>% 
-  add_model(wait_i_rf_mod) %>% 
-  add_recipe(wait_i_rf_recipe)
-
-# Specify control options 
-keep_pred <- control_resamples(save_pred = FALSE, save_workflow = FALSE)
-
-# Pipe our workflow through fit_resamples().
-wait_i_rf_res <- 
-  wait_i_rf_wflow %>% 
-  fit_resamples(resamples = in_train_splits, control = keep_pred)
-```
-
-Now let's look at the metrics averaged over the 50 splits (10 repeats x 5 folds).
-
-
-```{r metrics_rf_kfold}
-collect_metrics(wait_i_rf_res)
-```
-
-Now we'll refit one last model using the entire training set and assess its
-performance on the in design test data.
-
-```{r metrics_rf_last}
-# Do last fit
-wait_i_last_rf_res <- last_fit(wait_i_rf_wflow, xy_q_in_split)
-
-collect_metrics(wait_i_last_rf_res)
-```
-The RMSE on test is slightly smaller than RMSE on train which is unusual but
-can happen due to randomness.
-
-Plot the actual vs predicted on the in design test dataframe.
-
-```{r assess_wait_i_last_rf_res, fig.height=7, fig.width=7}
-# Grab the predictions on the test data
-assess_wait_i_last_rf_res <- collect_predictions(wait_i_last_rf_res)
-
-# Plot actual vs predicted.
-assess_wait_i_last_rf_res %>% 
-  ggplot(aes(x = mean_wait_i, y = .pred)) + 
-  geom_point(alpha = .15) +
-  geom_abline(color = "red") + 
-  coord_obs_pred() + 
-  xlab("Actual mean initial wait time (min)") +
-  ylab("Metamodel prediction") +
-  ggtitle("Random forest model")
-```
-
-In reality, the model above represents a model that does contain some
-level of basic queueing inspired feature engineering in that the three
-utilization terms are includes. Let's see how the random forest
-model does without those utilization terms - i.e. no queueing inspired features.
-
-```{r rf_noq}
-# Create a formula object. 
-wait_i_rf_mod_formula_noq <- mean_wait_i ~ patients_per_clinic_block + 
-                         num_med_techs +
-                         num_rooms + 
-                         vitals_time_mean +
-                         exam_time_mean +
-                         exam_time_cv2 + 
-                         post_exam_time_mean 
-
-# Now we'll create a recipe object 
-wait_i_rf_recipe_noq <- recipe(wait_i_rf_mod_formula, data = xy_q_in_train)
-
-# Now create a workflow object that uses the model and recipe above
-wait_i_rf_wflow_noq <- 
-  workflow() %>% 
-  add_model(wait_i_rf_mod) %>% 
-  add_recipe(wait_i_rf_recipe_noq)
-
-# Specify control options (earlier I was saving predicted values within the
-# resampling scheme but we don't need that now)
-keep_pred <- control_resamples(save_pred = FALSE, save_workflow = FALSE)
-
-# Pipe our workflow through tune::fit_resamples().
-wait_i_rf_res_noq <- 
-  wait_i_rf_wflow_noq %>% 
-  fit_resamples(resamples = in_train_splits, control = keep_pred)
-```
-
-Now let's look at the metrics averaged over the 50 splits (10 repeats x 5 folds).
-
-
-```{r metrics_rf_kfold_noq}
-collect_metrics(wait_i_rf_res_noq)
-```
-
-Now we'll refit one last model using the entire training set and assess its
-performance on the in design test data. 
-
-```{r metrics_rf_last_noq}
-# Do last fit
-wait_i_last_rf_res_noq <- last_fit(wait_i_rf_wflow_noq, xy_q_in_split)
-
-collect_metrics(wait_i_last_rf_res_noq)
-```
-The RMSE on test is slightly smaller than RMSE on train which is unusual but
-can happen due to randomness.
-
-Plot the actual vs predicted on the in design test dataframe.
-
-```{r assess_wait_i_last_rf_res_noq, fig.height=7, fig.width=7}
-# Grab the predictions on the test data
-assess_wait_i_last_rf_res_noq <- collect_predictions(wait_i_last_rf_res_noq)
-
-# Plot actual vs predicted.
-assess_wait_i_last_rf_res_noq %>% 
-  ggplot(aes(x = mean_wait_i, y = .pred)) + 
-  geom_point(alpha = .15) +
-  geom_abline(color = "red") + 
-  coord_obs_pred() + 
-  xlab("Actual mean initial wait time (min)") +
-  ylab("Metamodel prediction") +
-  ggtitle("Random forest model with no utilization terms")
-```
-
-
 ### Fit model on entire training set
 
 Just for fun, here's a single fit on the entire training dataset.
@@ -926,7 +1179,7 @@ In order to call the functions I wrote, I need to source the R script in
 which they live.
 
 ```{r source_my_parsnip_resample}
-source('lib/parsnip_tps.R')
+source('lib/myparsnip_funcs.R')
 ```
 
 
@@ -940,7 +1193,7 @@ wait_i_nls_mod_formula <- mean_wait_i ~ b1 * (num_med_techs ^ b2) *
   (mean_wait_i_dm1 ^ b3) *(num_rooms ^ b4) * (staff_eff_svc_time_cv2 ^ b5)
 
 # Call my custom function to fit the models for each split
-wait_i_kfold_res <- parsnip_fit_resamples(wait_i_nls_mod, wait_i_nls_mod_formula,
+wait_i_kfold_res <- myparsnip_fit_resamples(wait_i_nls_mod, wait_i_nls_mod_formula,
                                           in_train_splits, kfold_number, kfold_repeats)
 
 ```
@@ -961,7 +1214,7 @@ performance on the in design test data.
 
 ```{r metrics_nls_last}
 # Do last fit
-wait_i_last_res <- parsnip_last_fit(wait_i_nls_mod, wait_i_nls_mod_formula, xy_q_in_split)
+wait_i_last_res <- myparsnip_last_fit(wait_i_nls_mod, wait_i_nls_mod_formula, xy_q_in_split)
 
 tune:::collect_metrics.tune_results(wait_i_last_res$metrics_summary, summarize = FALSE)
 ```
@@ -1109,7 +1362,10 @@ the random forest model is a black box in comparison to the regression models.
 * the nonlinear queueing based model made sense in the context of the underlying process physics of the simulation model - each term was interpretable and had basis in theory,
 * the queueing knowledge used in this case was based on a transient D/M/1 model which is **VERY** different than the steady state queueing knowledge used in the inpatient OB flow example
 * there is **NO** simple cookbook procedure to exploiting domain knowledge (queueing knowledge in this case). Each situation is different and the details of the feature engineering are
-going to be situational. It's unrealistic to expect more.
+going to be situational. It's unrealistic to expect much more.
+* offered load and resource utilization based features are often simple to develop
+and can be quite predictive. More sophisticated terms based on things like
+wait times models require more domain knowledge but can be extremely predictive.
 
 
 
