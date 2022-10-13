@@ -1,5 +1,5 @@
 ---
-title: "Using tidymodels for simulation metamodeling (and a mini-rant on academic publishing)"
+title: "Using tidymodels for simulation metamodeling"
 format: 
   html:
     self-contained: true
@@ -15,12 +15,9 @@ library(stringr)
 ```
 
 
-
-
-
 ## Background
 
-I've written a multipart blog series on using R to do simulation metamodeling. The
+A few years ago I wrote a multipart blog series on using R to do simulation metamodeling. The
 blog posts were inspired by a research project in which I was using queueing
 inspired feature engineering to try to improve metamodel accuracy and interpretability.
 The setting for the study was a simulation of inpatient flow through hospital obstetrical units.
@@ -28,14 +25,13 @@ That study also was an opportunity to learn about the [caret](https://topepo.git
 some more advanced R programming to automate model fitting and assessment with
 caret. 
 
-The following blog posts I have done over the past few years provide some background on building simulation metamodels for this patient flow network.
 
 - [Comparing predictive models for obstetrical unit occupancy using caret - Part 1](https://misken.github.io/blog/obsim_caret_part1/)
 - [Comparing predictive model performance using caret - Part 2: A simple caret automation function](https://misken.github.io/blog/obsim_caret_part2/)
 - [Comparing predictive model performance using caret - Part 3: Put it all together](https://misken.github.io/blog/obsim_caret_part3/)
 
 Eventually, I redid the entire study in Python and turned it into
-a paper that is currently under review (as of August 2022). For the new study,
+a paper that is currently under review (as of October 2022). For the new study,
 I rewrote the discrete event simulation model using [SimPy](https://simpy.readthedocs.io/en/latest/) and we have
 released both the model and all of the metamodeling machinery as an open
 source project so that others can see exactly what we did and to show that everything is reproducible. Here a links to that repo as well as some blog posts I did on using
@@ -78,6 +74,7 @@ We developed a discrete event simulation model and ran a series of experiments i
 chart for which the simulation model was developed:
 
 ![Clinic flow](images/clinic_flow.png)
+
 The experimental design included the following input variables as their associated levels:
 
 -   number of medical technicians (2, 3, 4, 5)
@@ -90,6 +87,8 @@ The experimental design included the following input variables as their associat
     -   10 min: 32, 36, 40, 44, 48 patients
     -   15 min: 24, 28, 32, 36, 40 patients
     -   20 min: 16, 20, 24, 28, 32 patients
+    
+The design above leads to 4860 scenarios that were simulated.
 
 The key performance measures (output variables) were:
 
@@ -101,57 +100,55 @@ The key performance measures (output variables) were:
 We then developed an Excel based tool that simply did "table lookups" to create plots that showed how the performance measures varies across the levels of the input variables. 
 That original study was then followed by a research project into simulation metamodels for this same clinic experiment. That led to a [presentation at th INFORMS 2006 Annual Conference](https://www.researchgate.net/publication/362805793_An_outpatient_clinic_simulation_metamodeling_odyssey).
 
-Now I am revisiting this same scenario again for this current paper. After looking more closely at the original work, there were a few things I didn't like in terms of using it directly in the paper.
-
-1. Most importantly, since the simulation model was written so long ago and in MedModel, I had no access to the details of the simulation logic anymore.
-2. Also, while the exam time was modeled with an erlang distribution that allowed me to create realistic right skewed distributions and to easily have a few different experiment levels for the coefficient of variation squared (CV2) of the exam time distribution, the distributions used for the other stages of care (vital signs, post exam care, and room turnover) were all exponential distributions. The exponential distributions are pretty unrealistic. I wanted these to be erlang distributions as well so that I could adjust their CV2 values to make them more realistic.
-3. In the experimental design, there were five levels for the number of patients in each 4 hour clinic block. It looks like I had used levels 1, 3 and 5 as my training scenarios, and levels 2 and 4 for the test data. It would have been better if I had done a standard random train-test split with, say, 75% of the scenarios in train and the other 25% in split (there are 4860 scenarios in total). 
-
-So, I rewrote the [outpatient clinic simulation model in Python](https://github.com/misken/op_clinic) using the SimPy library. The logic is the same as the original model but incorporates the changes above and automates a bunch of simulation output analysis to create metamodeling input data sets. Each of the 4860 scenarios was simulated with 50 independent replications which then formed the basis for computing the scenario specific summary stats that get used as metamodeling inputs. It takes a few hours to make all the simulation runs.
+Now I am revisiting this same scenario again for this current paper. However, now our goal
+is to see how queueing inspired feature engineering can improve various simulation metamodeling approaches such as polynomial regression, cubic splines, and random forests. In addition, a nonlinear queueing based power model was also developed - it has far few parameters than the polynomial or spline models and is much more transparent than any of the other modeling approaches. In this blog post, I'm just going to focus
+on using the tidymodels package for model fitting and evaluation. We'll consider a pretty
+straightforward case - the polynomial regression model, as well as a more complicated case - the
+nonlinear power model. The complicating factor in using tidymodels for the
+nonlinear model is that the `nls()` function is not yet supported as a built in
+*model engine* in tidymodels for general nonlinear regression modeling.
 
 
 ## About the queueing inspired terms
 
 In the OB patient flow metamodels, the queueing inspired terms were things related to steady state analysis of the tandem queueing system and relied on things like overall resource load and utilization and steady state queueing results for M/G/s queueing systems. In contrast, this outpatient modeling problem involves transient analysis (a 4hr clinic block) of a system in which a finite number of scheduled patients arrive for care. Thus, steady state results are **not** relevant and we can (and do) intentionally overload the system since there are a finite number of patients who will eventually go through the clinic. Obviously, the more you overload the system, the longer the patient wait times and the longer the system has to operate beyond the 4 hour planned end of the day to clear all of the patients.
 
-So, the queuing inspired features for this problem uses known results for transient analysis of D/M/1 queues (see Slide 13 of the INFORMS presentation). In addition, staff, room and physician offered utilization terms were also included. Unlike in the steady state based scenario of the OB patient flow model, these terms could be greater than 1 (again, an overloaded system). I rewrote the R code that I had originally wrote that had the D/M/1 functions and moved it into Python. So, all of the feature engineering was done as part of the Python simulation output analysis. The result is a csv file, `xy_q.csv` that contains all of the base inputs, queueing related features, and output measures. As we'll see, the R tidymodels package made it easy to do polynomial and
-natural cubic spline based regression models as well as random forests to compare to the queueing inspired nonlinear model.
+So, the queuing inspired features for this problem uses known results for mean wait time in transient D/M/1 queues. In addition, staff, room and physician offered utilization terms were also included. Unlike in the steady state based scenario of the OB patient flow model, these terms could be greater than 1 (again, an overloaded system). All of the feature engineering was done as part of the Python simulation output analysis. The result is a csv file, `xy_q.csv` that contains all of the base inputs, queueing related features, and output measures. Our paper (link forthcoming when it's eventually published, we hope) has all the details. 
+
+Let's dive into tidymodels.
 
 ## Overview of the analysis with tidymodels
 
-What I decided to do was to just focus on one of the performance measures - initial
+Let's just focus on one of the performance measures - initial
 wait time for patient to get staff to begin the clinic care process.
 
-For this performance measure, I fit four different metamodels:
+For this blog post we'll fit two types of metamodels:
 
-* a nonlinear multiplicative power model based on queueing inspired features
 * a polynomial regression model
-* a natural cubic spline regression model
-* a random forest
+* a nonlinear multiplicative power model based on queueing inspired features
 
-For the polynomial, spline and random forest models, I was able to use the `tidymodels` package
+For the polynomial models, I was able to use the tidymodels package
 to create workflows that made it easy to fit a model using repeated k-crossfold resampling
-and then compute RMSE and an actual vs predicted plot for each model based on
-test data. The [Tidy Modeling with R](https://www.tmwr.org/) online book by Kuhn
+and then compute RMSE and an actual vs predicted plot for each model. The [Tidy Modeling with R](https://www.tmwr.org/) online book by Kuhn
 and Silge provides a very good introduction to the tidymodels package and how
 its consitutient packages can be used for different parts of the modeling process.
 
-For those who have used the sci-kit learn package in Python, tidymodels will feel
+For those who have used the [scikit-learn](https://scikit-learn.org/stable/index.html) package in Python, tidymodels will feel
 familiar except that different parts of the modeling process are handled by
 different packages under the tidymodels meta-package:
 
-* "empty" model objects are created (parsnip)
+* "empty" model objects are created ([parsnip](https://parsnip.tidymodels.org/))
 * adding model formulas and various preprocessing steps are done by creating
-a *recipe* (`recipes`)
-* resampling schemes such as k-crossfold validation or bootstrapping (`rsample`)
-* hyperparameter tuning (`tune` and `dial`)
-* model fitting (`parsnip` and `tune`)
-* model predictions (`parsnip`)
-* model assessment (`yardstick` and `tune`)
-* put it all together into a modeling workflow, similar to a pipeline in scikit-learn (`workflows`)
+a *recipe* ([recipes](https://recipes.tidymodels.org/))
+* resampling schemes such as k-crossfold validation or bootstrapping ([rsample](https://rsample.tidymodels.org/))
+* hyperparameter tuning ([tune](https://tune.tidymodels.org/) and [dials](https://dials.tidymodels.org/))
+* model fitting ([parsnip](https://parsnip.tidymodels.org/) and [tune](https://tune.tidymodels.org/))
+* model predictions ([parsnip](https://parsnip.tidymodels.org/))
+* model assessment ([yardstick](https://yardstick.tidymodels.org/) and [tune](https://tune.tidymodels.org/))
+* put it all together into a modeling workflow, similar to a pipeline in scikit-learn ([workflows](https://workflows.tidymodels.org/))
 
 While the presence of so many different packages can be daunting at first, by
-loading `tidymodels` you get access to all of the packages. The details of which
+loading tidymodels you get access to all of the packages. The details of which
 package does what became very important for this project when we needed to do
 some deep digging into the API and even the source code to figure out where
 things were going awry. More on this later.
@@ -174,7 +171,7 @@ for the `mean_wait_i` ("i" for initial) variable we'll be focusing on.
 
 ## Details on data partitioning
 
-### Create of in design and out of design dataframes
+### Create in design and out of design dataframes
 
 As described above, there are a total of 4860 scenarios and within those there
 are 5 different levels of number of patients per clinic session. In addition to assessing how accurate the various models are within the confines of the experimental design, I thought it would also be interesting to assess their relative peformance in extrapolation beyond the experimental design. So, I decided to treat the highest arrival rate level as the "out of design" holdout set. These scenarios correspond to every 5th row in the the `xy_q` dataframe.
@@ -200,26 +197,26 @@ To begin with, we'll just be focusing on the the in design dataframe, `xy_q_in`.
 
 ### Initial split of in_split
 
-The partitioning that we did so far of `xy_q` into `xy_q_in` and `xy_q_out` is for eventually seeing how well the various models can extrapolate beyond the experimental design space. Now, let's do an initial split of `xy_q_in` into training and test dataframes. Then we'll use k-crossfold validation on the training data and eventually do final model comparisons on the test data. The `initial_split` function is from the `rsample` package which I describe
-more in the next section. I'm using the `rsample::` function call just to highlight
-the fact that these funtions are from the `rsample` package - we've loaded `tidymodel` so
+The partitioning that we did so far of `xy_q` into `xy_q_in` and `xy_q_out` is for eventually seeing how well the various models can extrapolate beyond the experimental design space. Now, let's do an initial split of `xy_q_in` into training and test dataframes. Then we'll use k-crossfold validation on the training data and eventually do final model comparisons on the test data. The `initial_split` function is from the rsample package which I describe
+more in the next section. I'm using the `rsample::` form in the function call just to highlight
+the fact that these functions are from the `rsample` package - we've loaded `tidymodels` so
 there's really no need to do this.
 
 ```{r}
 set.seed(23)
 # Do the 75/25 split
-xy_q_in_split <- rsample::initial_split(xy_q_in)
+xy_q_in_split <- rsample::initial_split(xy_q_in, prop = 0.75)
 # Create train and test dataframes based on the split
 xy_q_in_train <- rsample::training(xy_q_in_split)
 xy_q_in_test <- rsample::testing(xy_q_in_split)
 ```
 
-### k-fold xval on in design scenarios
+### k-fold xval on in design scenarios using the rsample package
 
-One of the packages that falls under the `tidymodels` umbrella is called `rsample`. As its
+One of the packages that falls under the tidymodels umbrella is called rsample. As its
 name suggests, it support various resampling schemes such as bootstrapping and k-crossfold.
 
-In a nutshell, the `rsample::vfold_cv` function creates a dataframe of [rsplit objects](https://cran.r-project.org/web/packages/rsample/vignettes/rsample.html#individual-resamples-are-rsplit-objects) that contains the dataset partition information for each resampling (fold and repeat). The user can then fit models and compute errors on each partition and do whatever kind of error metric averaging desired.
+In a nutshell, the `rsample::vfold_cv` function creates a dataframe of [rsplit objects](https://cran.r-project.org/web/packages/rsample/vignettes/rsample.html#individual-resamples-are-rsplit-objects) that contains the dataset partition information for each resampling step (fold and repeat). The user can then fit models and compute errors on each partition and do whatever kind of error metric averaging desired.
 
 I decided to do 10 repeats of 5-fold cross validation. 
 
@@ -241,11 +238,14 @@ We can see that `in_train_splits` is a tibble of `vfold_split` objects (which ar
 in_train_splits
 ```
 
-Here's how we can access individual split data. This library uses the term *analysis* data instead of *train* and *assessment* data instead of *test*.
+Here's how we can access individual split data. The rsample library uses the term *analysis* data instead of *train* and *assessment* data instead of *test*.
 
 ```{r access_split_data_1}
+# Get the first resample object
 first_resample <- in_train_splits$splits[[1]]
+# Peek at train
 head(analysis(first_resample))
+# Peek at test
 head(assessment(first_resample))
 ```
 
@@ -253,54 +253,106 @@ head(assessment(first_resample))
 
 ## Polynomial regression model for initial wait
 
-Before looking at the nonlinear queueing based model, let's fit a polynomial
-regression model. In addition, we want to do repeated k-crossfold resampling
+Now let's fit a polynomial
+regression model to try to predict `mean_wait_i` (the initial wait time experienced by the patient before their vital signs are taken by a medical technician). We want to do repeated k-crossfold resampling
 to get a sense of how variable the model is when based on different fit
-datasets. We can do this all quite easily using `tidymodels` by building workflow objects to properly handle the model fitting and
+datasets. We can do this all quite easily using tidymodels by building workflow objects to properly handle the model fitting and
 assessment within the context of resampling.
 
-```{r poly_wf}
-# Create an empty model object of the appropriate type. Since poly regression
-# is really just a linear regression model with some added features (powers of inputs) we can use the `lm` as the engine.
+Start by creating an an empty model object of the appropriate type. Since polynomial regression
+is really just a linear regression model with some added features (powers of inputs) we use the
+`parsnip::linear_reg` function - https://parsnip.tidymodels.org/reference/linear_reg.html. Nothing
+special is needed for fitting a polynomial regression model in R beyond the `lm` function and
+we use `set_engine` to specify this choice for how the regression model should be fit. Technically,
+`lm' is the default engine for `linear_reg` but we are just being explicit. While we
+don't need them here, the `linear_reg` function also includes optional arguments related to
+regularization.
+
+```{r poly_model}
 wait_i_poly_mod <- linear_reg(mode = "regression") %>% 
   set_engine(engine = "lm")
+```
 
+For sckikit-learn users, the above is analogous to:
+
+```
+from sklearn import linear_model
+wait_i_poly_mod = linear_model.LinearRegression()
+```
+
+Next we need to create the specific linear regression formula object we want to fit.
+This first formula only contains basic inputs and does not include any queueing 
+inspired features. This next line of code has nothing to do with tidymodels, it's
+just creation of an R formula object.
+
+```{r poly_formula_noq}
 # Create a formula object. Later we'll use a recipe to generate the polynomial terms.
-wait_i_poly_mod_formula <- mean_wait_i ~ patients_per_clinic_block + 
+wait_i_poly_noq_formula <- mean_wait_i ~ patients_per_clinic_block + 
                          num_med_techs +
                          num_rooms + 
                          vitals_time_mean +
                          exam_time_mean +
                          exam_time_cv2 + 
-                         post_exam_time_mean + 
-                         off_util_staff + 
-                         off_util_room + 
-                         off_util_physician
+                         post_exam_time_mean
+```
 
-# Now we'll create a recipe object that contains two steps - the formula and the 
-# polynomial transforms.
-# For step_poly(), the default of degree = 2 corresponds to using up to squared terms.
-# We'll allow polynomial terms for all of our relevant inputs.
+Now we'll create a recipe object that contains two steps - the formula and the 
+polynomial transforms. Tidymodels uses the recipe package to let you create
+objects that encapsulate various modeling pre-processing tasks that occur prior to actually
+fitting the model. A peek at the [recipes docs](https://recipes.tidymodels.org/reference/index.html) reveals that recipes tries to
+provide a wide range of pre-processing functionality such as formula specification,
+imputation, transformations, dummy encoding, and more. There has been some
+[criticism of recipes (and tidymodels in general)](https://staffblogs.le.ac.uk/teachingr/2020/10/05/on-not-using-tidymodels/) in this regard in that it tries to do too much and does it not very well. I haven't used tidymodels nearly
+enough to have formed an opinion yet on this point. In scikit-learn, the
+`sklearn.preprocessing` package provides functionality that overlaps with
+the recipes package in R.
 
-wait_i_poly_recipe <- recipe(wait_i_poly_mod_formula, data = xy_q_in_train) %>% 
+In our case, the only pre-processing we need is to specify the
+base linear model formula and then add in the polynomial terms. We do the
+latter by using one the many `step_*` functions available in recipes - `step_poly`.
+For `step_poly`, the default of `degree = 2` corresponds to using up to squared terms.
+
+
+```{r poly_recipe_noq}
+
+wait_i_poly_noq_recipe <- recipe(wait_i_poly_noq_formula, data = xy_q_in_train) %>% 
   step_poly(patients_per_clinic_block, num_med_techs, num_rooms,
           vitals_time_mean, exam_time_mean, exam_time_cv2, post_exam_time_mean,
-          off_util_staff, off_util_room, off_util_physician,
           degree = 2)
 
-# Now create a workflow object that uses the model and recipe above
-wait_i_poly_wflow <- 
+```
+
+Now we can combine our model and our recipe into a workflow. This is
+reminiscent of [Pipeline objects in scikit-learn](https://scikit-learn.org/stable/modules/compose.html#combining-estimators).
+
+```{r poly_noq_workflow}
+# Create a workflow object that uses the model and recipe above
+wait_i_poly_noq_wflow <- 
   workflow() %>% 
   add_model(wait_i_poly_mod) %>% 
-  add_recipe(wait_i_poly_recipe)
+  add_recipe(wait_i_poly_noq_recipe)
+```
 
-# Specify control options (earlier I was saving predicted values within the
-# resampling scheme but we don't need that now)
-keep_pred <- control_resamples(save_pred = FALSE, save_workflow = FALSE)
+At this point, we still haven't fit any models nor done any resampling. We have
+simply set up a resampling scheme through our creation of the `in_train_splits`
+variable (a tibble of `vfold_split` objects) and created a workflow consisting
+of a model and a pre-processing recipe. Before launching the resampling and
+fitting process, we can set some resampling control options through the
+`rsample::control_samples` function. For example, we can choose to save
+the out of sample predictions for later analysis or append the workflow object 
+onto its output.
 
-# Pipe our workflow through tune::fit_resamples().
-wait_i_poly_res <- 
-  wait_i_poly_wflow %>% 
+
+```{r poly_control_resamples}
+keep_pred <- control_resamples(save_pred = TRUE, save_workflow = FALSE)
+```
+
+Finally, we can pipe our workflow through `tune::fit_resamples()`.
+
+```{r poly_noq_fit_resamples}
+
+wait_i_poly_noq_results <- 
+  wait_i_poly_noq_wflow %>% 
   fit_resamples(resamples = in_train_splits, control = keep_pred)
 ```
 
@@ -309,16 +361,16 @@ Notice that there's a small standard error on the metrics indicating that
 there's not a lot of variability between splits. This is good. The `tune::collect_metrics` function
 makes it easy to pull out and consolidate metrics. 
 
-```{r metrics_poly_kfold}
-collect_metrics(wait_i_poly_res)
+```{r metrics_poly_noq_kfold}
+collect_metrics(wait_i_poly_noq_results)
 ```
 
 Now we'll refit one last model using the entire training set and assess its
 performance on the in design test data. For this, we use `tune::last_fit()`.
 
-```{r poly_last}
+```{r poly_noq_last}
 # Do last fit
-wait_i_last_poly_res <- last_fit(wait_i_poly_wflow, xy_q_in_split)
+wait_i_last_poly_noq_results <- last_fit(wait_i_poly_noq_wflow, xy_q_in_split)
 ```
 
 What exactly is returned from `last_fit()`? It's a one row tibble of tibbles.
